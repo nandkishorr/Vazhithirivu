@@ -28,6 +28,12 @@
 - `.env.example` (placeholders only), `.gitignore` (covers `.env`, `.DS_Store`, data/PBF files, staticfiles).
 - No models beyond Django contrib. No templates or UI yet.
 
+## Repository state (end of Session 01)
+- Branch `main`, commits: `2127645` Initial commit (LICENSE) → `f3fd912` spec bundle + Session 00 audit → `ef2f038` Session 01 foundation. `main` is ahead of `origin/main` and **not pushed**.
+- `LICENSE` (MIT) restored with `git restore LICENSE` (owner decision, 2026-10-25), unchanged from `2127645`.
+- Working tree clean after `ef2f038` (except this file update).
+- Containers stopped with `docker compose down`. The `pgdata` volume still holds the migrated dev DB. Run `docker compose up -d` to resume.
+
 ## Commands/tests run (Session 01, actual outcomes)
 | Command | Result |
 |---|---|
