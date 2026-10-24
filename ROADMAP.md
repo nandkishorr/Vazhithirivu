@@ -14,10 +14,11 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 - [x] Tailwind build integrated with Django and Docker. Evidence: Session 02, Tailwind 4.3.3 standalone CLI stage, `app.css` present in prod image (ADR-008).
 - [~] Google Maps JavaScript API map page + Place Autocomplete (ADR-009). Implemented and unit-tested; not yet exercised in a browser with real keys.
 - [x] Crossing/track models and small test fixture. Evidence: Session 03, `railways` app, synthetic `sample_v1/v2.osm` fixtures (ADR-010).
-- [x] Idempotent OSM import command. Evidence: Session 03, `import_osm_railways` (pyosmium 4.3.2), 46 tests OK; not yet run against a real Geofabrik extract.
-- [ ] Nearby crossing query using PostGIS.
-- [ ] Map markers sourced from the local database.
-- [~] Attribution and source metadata visible/documented. Documented in DATA_SOURCES/RUNBOOK; UI attribution ("© OpenStreetMap contributors") still to add when crossings are rendered.
+- [x] Idempotent OSM import command. Evidence: Session 03, `import_osm_railways` (pyosmium 4.3.2). Real Kochi import (Geofabrik southern zone + bbox): 127 crossings / 330 tracks; rerun created 0.
+- [ ] Nearby crossing query using PostGIS (bbox/nearby endpoint). Today the home page embeds up to 5000 active crossings.
+- [~] Map markers sourced from the local database. 127 Kochi markers + details panel (always "Unknown"), 91 tests OK. Not clicked in a real browser. Live status isn't wired in yet.
+- [~] Human-readable crossing labels (road name / nearest place from OSM). Incomplete WIP on branch `wip/crossing-labels`.
+- [x] Attribution and source metadata visible/documented. DATA_SOURCES/RUNBOOK + "© OpenStreetMap contributors" in the home crossing panel.
 
 ## M2 — Route planning and crossing association
 - [ ] Provider-independent routing interface.
@@ -30,7 +31,7 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 ## M3 — Incident intelligence
 - [x] Timestamped community reports.
 - [x] Expiry, duplicate handling and conflicting-report logic.
-- [~] Status freshness and confidence display (done on crossing detail page + JSON API; no map markers yet).
+- [~] Status freshness and confidence display (done on crossing detail page + JSON API; the map marker panel doesn't call the status API yet).
 - [ ] Route-aware incident evaluation.
 - [ ] Reroute prompt with accept/reject actions.
 

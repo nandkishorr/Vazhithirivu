@@ -3,7 +3,8 @@
 > This file is the handoff point between agent sessions. Update it at the end of every meaningful work session.
 
 ## Status
-- Current milestone: **Session 04 (community crossing reports) implemented, 2026-10-25.** M1 in progress. Next: nearby-crossing query + map markers (Session 05).
+- Current milestone: **Sessions 02–04 + OSM crossing map markers committed (`ef9dc94`) and pushed to `origin/main`, 2026-10-25.** M1 nearly done. Next: Session 05 (map & location). It starts by finishing the crossing-label WIP and wiring live status into the marker panel (see Next steps).
+- Git: `main` = committed, tested work (91 tests OK). Branch `wip/crossing-labels` (`7693266`, pushed) holds **incomplete, untested** work on road/place-derived crossing labels. Don't merge it as is.
 - Product: Vazhithirivu (വഴിത്തിരിവ്), "Smart routes. Smarter crossings."
 - Target demo: Kochi, Kerala; future dataset target: India-wide mapped railway crossings.
 - Stack: Django 5.2 LTS, server-rendered templates, Tailwind CSS v4 (standalone CLI, ADR-008), Google Maps JavaScript API + Places API (New) (ADR-009), PostgreSQL 17 + PostGIS 3.5, Docker Compose. Not yet added: HTMX/Alpine (not needed yet), Redis/Channels/Celery (Session 07+).
@@ -23,7 +24,7 @@
 ## What exists now
 Session 01: settings split (`config/settings/{base,dev,test,prod}.py`), `/healthz/`, `/readyz/`, Dockerfile, Compose `db` + `web`.
 
-Session 02 (uncommitted):
+Session 02 (committed in `ef9dc94`):
 - **Tailwind**: `assets/tailwind/input.css` (theme, `.btn*`, `.field*`, `.card`, `.badge`, `.sheet`, reduced-motion rule; `@source` covers templates, `static/js`, `core/**/*.py`). Dockerfile `tailwind` stage (v4.3.3, sha256-verified) → `static/css/app.css` copied into the app image. Compose `tailwind` watcher service. `static/css/app.css` is git/docker-ignored.
 - **Components**: `core/templatetags/ui.py` (`{% icon %}` 18 inline Lucide SVGs, `{% status_badge %}` open/closed/unknown/stale/conflicting with unknown fallback, `{% source_badge %}` osm/community/simulated); `templates/components/` alert, empty_state, error_state, spinner, skeleton, badge partials.
 - **Pages**: `templates/base.html` (skip link, `lang="ml"` span); `/` → `core.views.home` / `templates/core/home.html`: header, desktop side panel / mobile bottom sheet, GET route form (no-destination warning; non-blank → "Route planning isn't available yet", no fabricated durations), opt-in location card (idle/requesting/active/denied/unavailable), crossing empty state ("OSM data not imported yet"), status legend with "not official / no report ≠ open". Map region: loading, API-unavailable / auth-failure, noscript, and not-configured states. `/ui/` component gallery (DEBUG only, labelled "Demo content").
@@ -31,7 +32,7 @@ Session 02 (uncommitted):
 - **Config**: `GOOGLE_MAPS_MAP_ID`, `MAP_DEFAULT_LAT/LNG/ZOOM` added; `.env.example` lists all Google keys (blank placeholders) with restriction guidance. `core/checks.py`: warnings `core.W001` (no browser key), `core.W002` (no Map ID).
 - Docs updated: RUNBOOK (Tailwind + Google key setup), DATA_SOURCES (Google, Lucide ISC), README (attribution), DECISIONS (ADR-008, ADR-009), ROADMAP.
 
-Session 03 (uncommitted, on top of uncommitted Session 02; ADR-010):
+Session 03 (committed in `ef9dc94`; ADR-010):
 - **`railways` app** (in `INSTALLED_APPS`). `railways/models.py`: `OsmImportRun` (path/url, sha256, size, header replication timestamp, coverage bbox, filters, counts, status/error); abstract `OsmReferenceFeature` (source osm/manual, osm_type/id/version/timestamp, full tags, first/last_seen_run, is_active/deactivated_at); `RailwayCrossing` (Point 4326, railway_value, crossing_barrier, is_suppressed/suppression_reason/admin_notes, **no status field**); `RailwayTrack` (LineString 4326, usage/service). Non-partial unique `(osm_type, osm_id)`, check constraint (osm rows need identity), GiST + is_active indexes. Migration `railways/migrations/0001_initial.py`.
 - `railways/importer.py` (`run_import`, `ImportFilters`, `flush_batch`, `_reconcile`): pyosmium 4.3.2 `FileProcessor.with_locations().with_filter(KeyFilter("railway"))` (verified untagged way nodes still resolve). Advisory lock, stale `running` runs marked failed, per-batch atomic upserts, `--bbox`, `--dry-run`, `--reconcile` (bbox + filter-scoped soft-delete, all-or-nothing, `--max-deactivate-fraction` abort). Skip reasons: `crossing_not_node`, `track_invalid_geometry`, `crossing_invalid_geometry`, `outside_bbox`.
 - `railways/management/commands/import_osm_railways.py` (thin CLI), `railways/admin.py` (GISModelAdmin; OSM fields read-only on osm rows; manual crossings + suppression; runs view-only).
@@ -40,7 +41,7 @@ Session 03 (uncommitted, on top of uncommitted Session 02; ADR-010):
 - Docs: DATA_SOURCES (Geofabrik URLs/sizes, ODbL/attribution, filters, corrections, refresh), RUNBOOK (OSM import section), DECISIONS ADR-010, ROADMAP.
 - `core/tests/test_ui.py`: no-key test now forces blank Google settings (it failed when `.env` held a real key).
 
-Session 04 (uncommitted, on top of uncommitted Sessions 02–03; ADR-011):
+Session 04 (committed in `ef9dc94`; ADR-011). This was built in a parallel session; the description below is that session's own record:
 - **`incidents` app** (in `INSTALLED_APPS` after `railways`). `incidents/models.py`: `CrossingReport` (FK→`RailwayCrossing` PROTECT related_name `reports`; `reported_state` open/closed; `source` community-only; `reporter` FK null SET_NULL `crossing_reports`; `created_at` settable `default=timezone.now`; `expires_at`; moderation `visible`/`hidden` + `moderated_by`/`moderated_at`/`moderation_note`; ordering `-created_at`; indexes (crossing, created_at) + (reporter, created_at); CheckConstraints expires>created + valid state/moderation). Migration `incidents/migrations/0001_initial.py`.
 - `incidents/services.py`: `derive_status` → `CrossingStatus` (states `closed_reported`/`open_reported`/`conflicting`/`stale`/`unknown`); fresh 15 min strict, stale→60, conflict window 5 min, per-reporter dedup (deleted reporters key `deleted:<pk>`), supporting/opposing counts; `create_report` (select_for_update per user; ReportNotAllowed, duplicate→(existing,False), flip<30s→RateLimited, >20/hr→RateLimited with retry); `public_recent_reports`, `status_label`.
 - Views+URLs (`incidents/urls.py` at root): `GET /crossings/<pk>/` (`crossing_detail`, `templates/incidents/crossing_detail.html`), `POST /crossings/<pk>/report/` (`crossing_report_submit`, PRG + messages), `GET /api/crossings/<pk>/status/` (`api_crossing_status`, never_cache), `POST /api/crossings/<pk>/reports/` (`api_crossing_reports`; 401 anon, 429+`Retry-After`, JSON+form). All hide inactive/suppressed crossings (404; API `{"error":"not_found"}`). `incidents/forms.py` `CrossingReportForm`.
@@ -51,6 +52,29 @@ Session 04 (uncommitted, on top of uncommitted Sessions 02–03; ADR-011):
 - `core/templatetags/ui.py`: status-badge aliases `closed_reported`/`open_reported`; `manual` source badge ("Manually added reference").
 - Tests: `incidents/tests/{test_status,test_reports,test_views,test_admin,test_purge}.py` + badge cases in `core/tests/test_ui.py`.
 - Docs: DECISIONS ADR-011, DATA_SOURCES community-reports section, RUNBOOK reports section, ROADMAP M3 ticks.
+
+OSM crossing map markers (after Session 03, committed in `ef9dc94`):
+- `core/views.py` `home`: when the map is configured, it sends active, non-suppressed crossings (osm + manual, capped at `CROSSING_MAP_LIMIT = 5000`) as `{{ crossings|json_script:"crossings-data" }}` with `crossing_count`.
+- `templates/core/home.html` "Crossing details" panel has three states:
+  - map not configured;
+  - no crossings imported;
+  - `#crossing-empty` plus a hidden `#crossing-detail` card. The card shows the name (fallback "Unnamed level crossing"), `status_badge "unknown"`, "no report doesn't mean the gate is open", the osm/manual source badge, barrier, coordinates, the "View on OpenStreetMap" link and a close button. "© OpenStreetMap contributors" attribution sits in the panel.
+- `static/js/map.js` `setupCrossingMarkers`: with a Map ID it uses neutral slate `AdvancedMarkerElement`/`PinElement` markers; otherwise classic `Marker`. Click fills the card via `textContent` and highlights the pin; Escape/close resets. `window.vz.crossingMarkers` holds the markers. `static/js/app.js` exposes `window.vz.expandSheet` (mobile sheet).
+- Tests: `core/tests/test_crossing_markers.py` (4). `HomeTests` are now `TestCase`.
+- Verified: full suite **Ran 91 tests, OK**; `node --check` clean; `curl /` contains 127 crossings (real `.env` key). **Not verified:** clicking markers in a real browser.
+- The marker panel always shows **Unknown**. It does not yet call the Session 04 status API, and it doesn't link to `/crossings/<id>/` (where reports are made).
+
+WIP on branch `wip/crossing-labels`: derived crossing labels. It's incomplete, with no migration, tests or run.
+- Goal: most OSM crossings have no `name` (0 of the 5 sampled in Kochi had one). Label each crossing from the road through it or the nearest named place. All values must come from OSM.
+- The WIP branch edits `railways/{models,importer,admin}.py` and the command. To finish it:
+  1. Add fields `road_name`, `road_ref`, `road_highway`, `road_osm_id`, `nearest_place_name`, `nearest_place_type`, `nearest_place_distance_m`, plus migration `0002`.
+  2. Add a `display_name` property: `name` → "Level crossing on <road> (<ref>)" → "Level crossing near <place>" → "Unnamed level crossing". Prefer `name:en`, else `name`.
+  3. Importer: `KeyFilter("railway","highway","place")`. Buffer crossings until the way pass is done, so the road is known.
+  4. Pick the road among highway ways containing the crossing node: those with a name/ref first, then rank motorway > trunk > primary > secondary > tertiary > unclassified > residential > living_street > service > track > other (footway/path last), then lowest way id.
+  5. Nearest place: `place` in {city, town, suburb, village, quarter, neighbourhood, hamlet, locality}, found via a 0.02° grid, ≤3 km haversine. Don't bbox-filter roads or places. Add counts `crossings_with_road` and `crossings_with_place`.
+  6. UI: send `label`, `road`, `place`, `place_distance_m` in the home JSON and use them in map.js. Add "Road (OSM)" / "Nearby place (OSM, approx.)" rows in the panel and in `incidents/crossing_detail.html`.
+  7. Tests: extend the synthetic fixtures (road choice, `name:en`, place distance, nothing within 3 km, rename on refresh, idempotency).
+  8. Re-import Kochi and record how many crossings got a road and how many a place.
 
 ## Commands/tests run (Session 04, actual outcomes)
 | Command | Result |
@@ -100,24 +124,29 @@ Re-run after review fix, with a keyless `.env` copied from `.env.example` (git-i
 Not run: browser rendering with real Google keys (none configured), device/visual screenshots (skipped per owner).
 
 ## Known risks / open questions
-- Google Maps path is untested in a real browser: needs `GOOGLE_MAPS_BROWSER_KEY` + `GOOGLE_MAPS_MAP_ID`. Check autocomplete `gmp-select`, Map ID styling, AdvancedMarker, `gm_authFailure`, and that the bottom sheet doesn't cover Google's logo/terms on mobile.
+- Google Maps path is not verified by an agent in a real browser. `.env` now holds a real browser key (Map ID presence unverified). Check autocomplete `gmp-select`, Map ID styling, AdvancedMarker, crossing-marker click (it listens to both `gmp-click` and `click`, so the panel may fill twice; harmless), `gm_authFailure`, and that the bottom sheet doesn't cover Google's logo/terms on mobile.
+- Real OSM data lives only in the local dev DB volume (`pgdata`). Another machine must download and import it again (RUNBOOK "OSM import"). `data/osm/*.pbf` is git-ignored.
 - Template tests only grep HTML; they can't catch JS syntax errors (the loader bug above slipped past them). Consider a `node --check` step or a browser smoke test in CI.
 - Google terms: Places/Maps content caching/storage limits; Google route alternatives can't guarantee crossing avoidance (ADR-004).
 - PostGIS runs under amd64 emulation on Apple Silicon (slow). `libgdal-dev` makes the image large.
 - MIT code license vs ODbL obligations for distributed OSM-derived data still to review.
 - Routing engine with segment exclusion not chosen (Session 06).
-- `main` is ahead of `origin/main` (Session 00/01 commits) and not pushed; Sessions 02 and 03 are uncommitted.
-- Importer untested on real data: OSM tagging quirks at scale, `flex_mem` memory on the full India extract (use `--location-index dense_file_array,...`), and run time are unknown.
+- Importer tested on the real Kochi bbox only. Memory with `flex_mem` and run time on the full southern-zone or India extract are unknown (for India use `--location-index dense_file_array,...`).
 - Reconcile leaves tracks that cross the bbox boundary alone (`__within`), so stale boundary tracks can stay active after a regional refresh.
-- No UI shows "© OpenStreetMap contributors" yet (needed once crossings render). The ODbL share-alike review for distributing DB dumps is still open.
+- OSM attribution is shown in the home crossing panel. The ODbL share-alike review for distributing DB dumps is still open.
 - Test settings still read `.env`. Any test that depends on blank keys must override settings explicitly.
 
 ## Next steps
-1. Owner: review and commit Sessions 02 + 03; push `main` when ready.
-2. **Deferred by owner (2026-10-25):** Google key setup + browser check. `.env` exists (copied from `.env.example`, keys blank). When keys are added: `docker compose up -d --force-recreate web`, then verify map + Map ID style, Place Autocomplete, "Use my location" marker, and that the mobile sheet doesn't cover Google's logo/terms. Do this at the latest in Session 05 (map & location), which builds on the Google map.
-3. Real Kochi import: download `southern-zone-latest.osm.pbf` (+ `.md5`) into `data/osm/`, run `--dry-run`, then `docker compose --profile import run --rm osm-import --source /data/osm/southern-zone-latest.osm.pbf --bbox 76.18,9.85,76.45,10.15`. Record counts, duration and DB size in RUNBOOK. Spot-check a few crossings against openstreetmap.org.
-4. Session 05: nearby-crossing PostGIS query (active, non-suppressed, osm + manual) + map markers linking to `/crossings/<id>/` with source badge and "© OpenStreetMap contributors" attribution; wire the status JSON (`/api/crossings/<id>/status/`) into the map UI.
-6. Google sign-in via a vetted package (replaces interim LoginView); keep admin-created accounts working.
-7. Schedule `purge_crossing_reports` once Celery beat exists (Session 07); consider a JSON 403 body for API CSRF failures.
-8. Add lint tooling (ruff) and a `node --check static/js/*.js` step; CI running `manage.py test` in Compose.
-9. Slim the Dockerfile (runtime-only GDAL libs).
+1. **Finish crossing labels** from branch `wip/crossing-labels`: rebase or merge onto `main`, then complete the 8-step plan in "What exists now". Re-run the Kochi import and record the label coverage.
+2. **Wire live status into the marker panel:** on marker click, fetch `GET /api/crossings/<id>/status/`. Show the derived state with freshness and "community report — not official", and fall back to Unknown on error. Link "Report / details" to `/crossings/<id>/`. Optionally colour pins by derived status (closed/conflicting/stale/unknown), always with a label and never green for "no report".
+3. **Browser check with real keys** (owner): map, Map ID style, crossing markers + panel (desktop and mobile sheet), Place Autocomplete, "Use my location", and Google logo/terms not covered.
+4. **Session 05** (`prompts/sessions/SESSION_05_MAP_AND_LOCATION.md`):
+   - a bbox/nearby crossing PostGIS query + JSON endpoint, for when the dataset outgrows the 5000 cap;
+   - an opt-in, session-scoped location flow.
+5. Then Session 06 (routing: provider abstraction, route ↔ crossing association, verified detours) and Session 07 (realtime + Celery). The closed-gate → reroute trigger the owner wants depends on both.
+6. Housekeeping:
+   - Google sign-in via a vetted package (replaces the interim LoginView);
+   - schedule `purge_crossing_reports` (Session 07);
+   - JSON 403 for API CSRF failures;
+   - ruff + `node --check` in CI;
+   - slim the Dockerfile.

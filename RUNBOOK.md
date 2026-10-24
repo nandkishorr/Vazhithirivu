@@ -25,7 +25,7 @@ Commands marked *(verified)* were run successfully in Session 01 (2026-10-25) on
 - Readiness: `curl -i localhost:8000/readyz/` → `200 {"status":"ok","checks":{"database":"ok","postgis":"ok"}}`, or `503` with `"status":"error"`. Error details only go to the server logs *(verified)*
 
 ## Tests and checks
-- Test suite: `docker compose run --rm web python manage.py test --settings=config.settings.test` *(verified Session 03: 46 tests OK)*. Django creates `test_vazhithirivu` with PostGIS, which needs the container superuser (the default).
+- Test suite: `docker compose run --rm web python manage.py test --settings=config.settings.test` *(verified 2026-10-25: 91 tests OK)*. Django creates `test_vazhithirivu` with PostGIS, which needs the container superuser (the default). If a killed run leaves a stale `test_vazhithirivu`, answer `yes` to the prompt or pass `--noinput` so Django recreates it.
 - System check: `docker compose run --rm web python manage.py check` *(verified: no issues)*
 - Prod deploy check: `docker compose run --rm -e DJANGO_SETTINGS_MODULE=config.settings.prod -e DJANGO_SECRET_KEY=<50+ random chars> -e DJANGO_ALLOWED_HOSTS=example.com web python manage.py check --deploy` *(verified)*. Only `security.W004` (HSTS) remains until `DJANGO_SECURE_HSTS_SECONDS` is set.
 
