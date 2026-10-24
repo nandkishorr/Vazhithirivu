@@ -80,6 +80,33 @@ services:
       db:
         condition: service_healthy
 
+  # Optional simulator service (ADR-015). The app works without it.
+  # Start:  docker compose --profile simulation up -d simulator
+  # Then:   docker compose exec web python manage.py simulator start ...
+  # Or manual ticks without the service: manage.py simulator tick --n 40
+  simulator:
+    profiles: ["simulation"]
+    build:
+      context: .
+      args:
+        REQUIREMENTS: requirements/dev.txt
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.dev}
+      DATABASE_URL: postgis://${POSTGRES_USER:-vazhithirivu}:${POSTGRES_PASSWORD:-vazhithirivu}@db:5432/${POSTGRES_DB:-vazhithirivu}
+      # Redis is how sim ticks reach browsers connected to `web`.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    command: python manage.py run_simulator
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   # Dev-only Tailwind watcher; recompiles static/css/app.css on file changes.
   # The web app does not depend on it (it serves whatever CSS exists).
   tailwind:

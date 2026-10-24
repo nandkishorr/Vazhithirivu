@@ -43,14 +43,14 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 - [ ] Privacy controls and expiry/cleanup.
 - [ ] No public exposure of exact location by default.
 
-## M5 — Optional simulator
-- [ ] Independent Docker Compose profile/service.
-- [ ] Simulation run IDs and isolated data.
-- [ ] Deterministic gate cycles.
-- [ ] 50–200 simulated vehicles along route geometry.
-- [ ] WebSocket updates and client-side animation.
-- [ ] Reuse incident/reroute services.
-- [ ] Start/pause/stop/reset tests proving real data remains untouched.
+## M5 — Optional simulator — DONE (Session 08, ADR-015)
+- [x] Independent Docker Compose profile/service (`--profile simulation` → `run_simulator`; app works without it).
+- [x] Simulation run IDs and isolated data (`simulator_*` tables, run-scoped, cascade reset; `active_slot` enforces one active run).
+- [x] Deterministic gate cycles (`--seed` + `--gate ID:CLOSE:OPEN` / `--random-gates`).
+- [x] 50–200 simulated vehicles moving through real crossings — on **synthetic** paths perpendicular to the nearest track (no road geometry is imported; labelled as demo).
+- [x] WebSocket updates and client-side animation (`ws/simulation/` coarse ticks + browser interpolation + `/api/simulation/` poll fallback). Not yet exercised in a real browser.
+- [x] Reuse incident/reroute services — registered status overlay (`effective_statuses`); simulated closures block routes through the same verification flow, labelled everywhere.
+- [x] Start/pause/stop/reset + isolation tests proving reports/reference data untouched (48 new tests).
 
 ## M6 — Product polish
 - [~] Responsive Tailwind UI, desktop panel and mobile bottom sheet (shell built Session 02; not visually verified on devices).

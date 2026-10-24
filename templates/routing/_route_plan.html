@@ -29,7 +29,7 @@
     {% for route in route_plan.routes %}
       <div class="card mt-3" data-route-panel="{{ route.id }}" {% if not route.is_primary %}hidden{% endif %}>
         <div class="flex flex-wrap items-baseline gap-x-2">
-          <p class="text-sm font-semibold text-slate-900">
+          <p class="text-base font-bold text-slate-900">
             {% if route.candidate.distance_m %}{{ route.candidate.distance_km }} km{% endif %}
             {% if route.candidate.duration_s %}· about {{ route.candidate.duration_min }} min{% endif %}
           </p>
@@ -44,27 +44,41 @@
         {% endif %}
         <p class="mt-0.5 text-xs text-slate-500">
           Planned at {{ route_plan.computed_at|date:"H:i" }} — crossing statuses as of then.
-          <a href="?origin={{ origin|urlencode }}&origin_place_id={{ origin_place_id|urlencode }}{% if origin_lat %}&origin_lat={{ origin_lat|urlencode }}&origin_lng={{ origin_lng|urlencode }}{% endif %}&destination={{ destination|urlencode }}&destination_place_id={{ destination_place_id|urlencode }}" class="font-medium text-brand-700 hover:underline">Refresh</a>
+          <a href="?origin={{ origin|urlencode }}&origin_place_id={{ origin_place_id|urlencode }}{% if origin_lat %}&origin_lat={{ origin_lat|urlencode }}&origin_lng={{ origin_lng|urlencode }}{% endif %}&destination={{ destination|urlencode }}&destination_place_id={{ destination_place_id|urlencode }}{% if destination_lat %}&destination_lat={{ destination_lat|urlencode }}&destination_lng={{ destination_lng|urlencode }}{% endif %}" class="font-medium text-brand-700 hover:underline">Refresh</a>
         </p>
 
         {% if route.is_primary and route_plan.warning_level == "closed_on_route" %}
           <div class="mt-2 space-y-1">
-            {% include "components/alert.html" with variant="error" title="Reported closed on your route" %}
+            {% if route_plan.blocking_all_simulated %}
+              {% include "components/alert.html" with variant="error" title="Crossing closed on your route (simulated demo)" %}
+            {% else %}
+              {% include "components/alert.html" with variant="error" title="Reported closed on your route" %}
+            {% endif %}
             {% for entry in route_plan.blocking %}
               {% if entry.crossing.match == "on_route" %}
                 <p class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900">
                   <span class="font-semibold">{{ entry.crossing.name|default:"Unnamed level crossing" }}</span>,
-                  at {{ entry.crossing.along_km }} km along the route. Community report {{ entry.status.age }} — not official railway information.
+                  at {{ entry.crossing.along_km }} km along the route.
+                  {% if entry.status.simulated %}
+                    Simulated gate closure — demo data, not a real-world report.
+                  {% else %}
+                    Community report {{ entry.status.age }} — not official railway information.
+                  {% endif %}
                 </p>
               {% endif %}
             {% endfor %}
           </div>
         {% elif route.is_primary and route_plan.warning_level == "closed_near_route" %}
           <div class="mt-2 space-y-1">
-            {% include "components/alert.html" with variant="warning" title="A crossing reported closed is near this route" body="It may be on the route — treat with caution. Community reports aren't official railway information." %}
+            {% if route_plan.blocking_all_simulated %}
+              {% include "components/alert.html" with variant="warning" title="A simulated-closed crossing is near this route" body="It may be on the route — treat with caution. Demo data, not real-world status." %}
+            {% else %}
+              {% include "components/alert.html" with variant="warning" title="A crossing reported closed is near this route" body="It may be on the route — treat with caution. Community reports aren't official railway information." %}
+            {% endif %}
             {% for entry in route_plan.blocking %}
               <p class="text-xs text-slate-600">
-                {{ entry.crossing.name|default:"Unnamed level crossing" }} — near the route at {{ entry.crossing.along_km }} km, reported {{ entry.status.age }}.
+                {{ entry.crossing.name|default:"Unnamed level crossing" }} — near the route at {{ entry.crossing.along_km }} km,
+                {% if entry.status.simulated %}simulated closure (demo){% else %}reported {{ entry.status.age }}{% endif %}.
               </p>
             {% endfor %}
           </div>
@@ -77,7 +91,7 @@
         {% if route.crossings %}
           <p class="mt-3 text-xs font-medium text-slate-700">
             {{ route.crossings|length }} mapped crossing{{ route.crossings|length|pluralize }} on this route
-            {% for state, count in route.counts.items %}· {{ count }} {{ state|cut:"_reported" }}{% endfor %}
+            {% for state, count in route.counts.items %}· {{ count }} {{ state|cut:"_reported"|cut:"_simulated" }}{% if "_simulated" in state %} (simulated){% endif %}{% endfor %}
           </p>
           <ul class="mt-1.5 divide-y divide-slate-100">
             {% for entry in route.crossings %}
@@ -153,7 +167,6 @@
       Never cross a closed gate or go around barriers.
     </p>
     <p class="mt-1 text-xs text-slate-400">{{ route_plan.attribution }}</p>
-    <p id="route-announce" class="sr-only" aria-live="polite"></p>
 
   {% else %}
     {# Error states: honest text per code; never a duration. #}

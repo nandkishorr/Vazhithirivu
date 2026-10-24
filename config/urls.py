@@ -16,4 +16,5 @@ urlpatterns = [
     ),
     path("", include("core.urls")),
     path("", include("incidents.urls")),
+    path("", include("simulator.urls")),
 ]

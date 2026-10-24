@@ -23,12 +23,20 @@ def _parse_coord(value, lo, hi):
     return coord if lo <= coord <= hi else None
 
 
+def _has_coords(lat_raw, lng_raw):
+    return (
+        _parse_coord(lat_raw, -90, 90) is not None
+        and _parse_coord(lng_raw, -180, 180) is not None
+    )
+
+
 def _waypoint(place_id, address, lat_raw=None, lng_raw=None):
     from routing.providers import Waypoint
 
     safe_id = place_id if PLACE_ID_RE.match(place_id or "") else ""
-    # Opt-in "my location" origin (ADR-005): coords are only honoured when
-    # no place was picked and are never stored.
+    # Coordinates are honoured only when no place was picked and are never
+    # stored. Origin coords come from the opt-in "my location" fix;
+    # destination coords from an explicit map click (ADR-005/ADR-016).
     lat = lng = None
     if not safe_id:
         lat = _parse_coord(lat_raw, -90, 90)
@@ -50,7 +58,15 @@ def home(request):
     if destination is not None:
         if not destination.strip():
             route_state = "empty"
-        elif not origin.strip():
+        elif not origin.strip() or (
+            # "My location" without a fix must never reach the provider —
+            # Google would geocode the literal string.
+            origin.strip().lower() == "my location"
+            and not _has_coords(
+                request.GET.get("origin_lat"),
+                request.GET.get("origin_lng"),
+            )
+        ):
             route_state = "missing_origin"
         elif not settings.GOOGLE_MAPS_BROWSER_KEY:
             # Google route content must be shown on a Google map.
@@ -70,6 +86,8 @@ def home(request):
                 _waypoint(
                     request.GET.get("destination_place_id", ""),
                     destination,
+                    request.GET.get("destination_lat"),
+                    request.GET.get("destination_lng"),
                 ),
                 client_key=client_key,
             )
@@ -90,6 +108,9 @@ def home(request):
             % ("wss" if request.is_secure() else "ws", request.get_host()),
             "crossingsMinZoom": settings.MAP_CROSSINGS_MIN_ZOOM,
             "bboxMaxSpan": settings.MAP_BBOX_MAX_SPAN_DEG,
+            "simulationUrl": reverse("api_simulation_state"),
+            "simulationWsUrl": "%s://%s/ws/simulation/"
+            % ("wss" if request.is_secure() else "ws", request.get_host()),
         }
         from railways.models import RailwayCrossing
 
@@ -97,26 +118,41 @@ def home(request):
             is_active=True, is_suppressed=False
         ).exists()
 
-    return render(
-        request,
-        "core/home.html",
-        {
-            "origin": request.GET.get("origin", ""),
-            "destination": destination or "",
-            "route_state": route_state,
-            "route_plan": route_plan,
-            "route_data": route_data,
-            "origin_place_id": request.GET.get("origin_place_id", ""),
-            "destination_place_id": request.GET.get(
-                "destination_place_id", ""
-            ),
-            "origin_lat": request.GET.get("origin_lat", ""),
-            "origin_lng": request.GET.get("origin_lng", ""),
-            "map_config": map_config,
-            "has_crossings": has_crossings,
-            "debug": settings.DEBUG,
-        },
-    )
+    context = {
+        "origin": request.GET.get("origin", ""),
+        "destination": destination or "",
+        "route_state": route_state,
+        "route_plan": route_plan,
+        "route_data": route_data,
+        "origin_place_id": request.GET.get("origin_place_id", ""),
+        "destination_place_id": request.GET.get(
+            "destination_place_id", ""
+        ),
+        "origin_lat": request.GET.get("origin_lat", ""),
+        "origin_lng": request.GET.get("origin_lng", ""),
+        "destination_lat": request.GET.get("destination_lat", ""),
+        "destination_lng": request.GET.get("destination_lng", ""),
+        "map_config": map_config,
+        "has_crossings": has_crossings,
+        "debug": settings.DEBUG,
+    }
+
+    # Dynamic reroute (ADR-016): the same plan, but only the result region
+    # re-rendered plus the map payload, so the page updates without reload.
+    if request.GET.get("format") == "json":
+        from django.template.loader import render_to_string
+
+        return JsonResponse(
+            {
+                "route_state": route_state or "",
+                "html": render_to_string(
+                    "routing/_route_result.html", context, request
+                ),
+                "route_data": route_data,
+            }
+        )
+
+    return render(request, "core/home.html", context)
 
 
 def _route_data(plan):
@@ -136,6 +172,9 @@ def _route_data(plan):
                 "id": route.id,
                 "primary": route.is_primary,
                 "verification": route.verification,
+                "description": route.candidate.description or "",
+                "distance_km": route.candidate.distance_km,
+                "duration_min": route.candidate.duration_min,
                 "coords": coords,
                 "crossings": [
                     {
@@ -145,6 +184,7 @@ def _route_data(plan):
                         "state": e.status.state,
                         "match": e.crossing.match,
                         "name": e.crossing.name,
+                        "simulated": e.status.simulation is not None,
                     }
                     for e in route.crossings
                 ],

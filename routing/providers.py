@@ -47,8 +47,8 @@ class RoutingError(Exception):
 class Waypoint:
     place_id: str = ""
     address: str = ""
-    # Opt-in "my location" origin: lat/lng arrive as GET params only when
-    # the user submits the form; they are never stored server-side.
+    # lat/lng arrive as GET params only from an explicit user action (the
+    # opt-in "my location" fix or a map click); they are never stored.
     lat: float | None = None
     lng: float | None = None
 

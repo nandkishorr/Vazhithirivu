@@ -81,6 +81,20 @@ _STATUS_BADGES = {
 _STATUS_BADGES["closed_reported"] = _STATUS_BADGES["closed"]
 _STATUS_BADGES["open_reported"] = _STATUS_BADGES["open"]
 
+# Simulated states are always visually distinct (violet + flask icon).
+_STATUS_BADGES["closed_simulated"] = {
+    "label": "Simulated closed",
+    "icon": "flask-conical",
+    "classes": "bg-violet-50 text-violet-800 ring-violet-600/20",
+    "description": "A demo simulation marked this gate closed — not real data.",
+}
+_STATUS_BADGES["open_simulated"] = {
+    "label": "Simulated open",
+    "icon": "flask-conical",
+    "classes": "bg-violet-50 text-violet-800 ring-violet-600/20",
+    "description": "A demo simulation marked this gate open — not real data.",
+}
+
 
 @register.inclusion_tag("components/status_badge.html")
 def status_badge(key):

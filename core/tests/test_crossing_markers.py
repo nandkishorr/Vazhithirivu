@@ -97,6 +97,8 @@ class CrossingMarkerTests(TestCase):
         self.assertIn("data-status-error", content)
         self.assertIn("data-crossing-detail-link", content)
         self.assertIn("Report or view details", content)
+        self.assertIn('id="crossing-route-here"', content)
+        self.assertIn("Route here", content)
 
     def test_status_endpoint_for_marker_crossing(self):
         # The marker panel fetches /api/crossings/<id>/status/ for crossings

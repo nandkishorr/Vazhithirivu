@@ -37,6 +37,14 @@ env = environ.Env(
     REDIS_URL=(str, ""),
     REALTIME_MAX_SUBSCRIPTIONS=(int, 500),
     REALTIME_SUBSCRIBE_MIN_SECONDS=(float, 1.0),
+    SIM_TICK_SECONDS=(int, 5),
+    SIM_DEFAULT_VEHICLES=(int, 60),
+    SIM_MAX_VEHICLES=(int, 200),
+    SIM_DEFAULT_DURATION_SECONDS=(int, 600),
+    SIM_PATH_LENGTH_M=(float, 4000.0),
+    SIM_VEHICLE_MIN_SPEED_MPS=(float, 6.0),
+    SIM_VEHICLE_MAX_SPEED_MPS=(float, 14.0),
+    SIM_HEARTBEAT_STALE_SECONDS=(int, 45),
 )
 
 # .env is optional: real environment variables always take precedence.
@@ -64,6 +72,7 @@ INSTALLED_APPS = [
     "railways",
     "incidents",
     "routing",
+    "simulator",
 ]
 
 MIDDLEWARE = [
@@ -197,6 +206,18 @@ else:
 
 REALTIME_MAX_SUBSCRIPTIONS = env.int("REALTIME_MAX_SUBSCRIPTIONS")
 REALTIME_SUBSCRIBE_MIN_SECONDS = env.float("REALTIME_SUBSCRIBE_MIN_SECONDS")
+
+# Optional traffic/crossing simulator (simulator app; see ADR-015). The
+# app is always installed but inert until a run is started; simulated
+# state lives only in simulator_* tables and is labelled everywhere.
+SIM_TICK_SECONDS = env.int("SIM_TICK_SECONDS")
+SIM_DEFAULT_VEHICLES = env.int("SIM_DEFAULT_VEHICLES")
+SIM_MAX_VEHICLES = env.int("SIM_MAX_VEHICLES")
+SIM_DEFAULT_DURATION_SECONDS = env.int("SIM_DEFAULT_DURATION_SECONDS")
+SIM_PATH_LENGTH_M = env.float("SIM_PATH_LENGTH_M")
+SIM_VEHICLE_MIN_SPEED_MPS = env.float("SIM_VEHICLE_MIN_SPEED_MPS")
+SIM_VEHICLE_MAX_SPEED_MPS = env.float("SIM_VEHICLE_MAX_SPEED_MPS")
+SIM_HEARTBEAT_STALE_SECONDS = env.int("SIM_HEARTBEAT_STALE_SECONDS")
 
 LOGGING = {
     "version": 1,

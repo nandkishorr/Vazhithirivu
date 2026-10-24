@@ -44,6 +44,45 @@ def status_brief(status, now):
     }
 
 
+def effective_status_payload(effective, now):
+    """Full payload for an ``EffectiveStatus`` (community + overlay).
+
+    Always carries ``simulated`` so clients can label demo data; when a
+    simulation overlays the crossing, the original community state is
+    preserved under ``community_state``.
+    """
+    payload = status_payload(effective.community, now)
+    payload["state"] = effective.state
+    payload["label"] = status_label(effective.state)["label"]
+    payload["simulated"] = effective.simulation is not None
+    if effective.simulation is not None:
+        payload["simulation"] = {
+            "run_id": effective.simulation.get("run_id"),
+            "label": effective.simulation.get("label") or "",
+            "gate_state": effective.simulation.get("gate_state"),
+        }
+        payload["community_state"] = effective.community.state
+    return payload
+
+
+def effective_status_brief(effective, now):
+    """Brief variant for the bbox endpoint, including sim provenance."""
+    payload = effective_status_payload(effective, now)
+    return {
+        key: payload[key]
+        for key in (
+            "state",
+            "label",
+            "last_report_at",
+            "last_report_age_seconds",
+            "simulated",
+            "simulation",
+            "community_state",
+        )
+        if key in payload
+    }
+
+
 def report_payload(report, now):
     return {
         "state": report.reported_state,

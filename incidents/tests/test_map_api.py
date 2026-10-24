@@ -95,6 +95,7 @@ class CrossingsInBboxApiTests(TestCase):
                 "label",
                 "last_report_at",
                 "last_report_age_seconds",
+                "simulated",
             },
         )
 

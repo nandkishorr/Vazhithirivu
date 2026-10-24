@@ -3,8 +3,66 @@
 > This file is the handoff point between agent sessions. Update it at the end of every meaningful work session.
 
 ## Status
-- Current milestone: **Session 07 (realtime status pushes) implemented, uncommitted, 2026-10-25.** WS endpoint `/ws/crossings/` live-verified end-to-end over Redis; not yet seen in a real browser. Next: owner commits, browser smoke (live pin update + fallback), crossing labels.
-- Git: `main` = Session 07 commit on top of `b0dd0dd` (committed, not pushed; 4 unpushed commits total). Branch `wip/crossing-labels` (`7693266`, pushed) still holds **incomplete, untested** label work. Don't merge it as is.
+- Current milestone: **Session 09 (click-to-route UX) implemented, uncommitted, 2026-10-25.** Map-click destinations, dynamic reroute via `?format=json`, A/B endpoint pins, bolder route line, default "My location" origin with alert-style location UI.
+- Git: `main` = Session 07 commit (`962eaa5`, 4 unpushed commits) + uncommitted Session 08 + 09 tree. Branch `wip/crossing-labels` still incomplete — don't merge.
+
+## What exists now — Session 09 (uncommitted; ADR-016)
+- **Click-to-route**: `map.js` `setupRoutes` rewritten — `map` `click` listener routes to a POI (`placeId`, `event.stop()` suppresses the info window) or any point. `resolveDestination` reverse-geocodes the click (Geocoding API: `placeId` for POIs, `location` for bare clicks) so the destination is a real selectable Google place/address; falls back to "Selected place"/"Pinned location (lat, lng)" when geocoding is unavailable. **Browser key now also needs the Geocoding API** (RUNBOOK/DATA_SOURCES/.env.example updated). `disableDoubleClickZoom: true` (dblclick fires two clicks). Crossing detail card gains `#crossing-route-here` → routes to crossing coords. "Route here"/map clicks go through `ensureOriginThen`: picked place/typed text wins; "My location" or empty From → `window.vz.requestMyLocation` first, reroute on fix.
+- **Dynamic reroute**: `core.views.home` accepts `format=json` → `JsonResponse{route_state, html, route_data}`; `html` = new `templates/routing/_route_result.html` (extracted state block) rendered via `render_to_string`. `map.js` `reroute()` builds params from the form fields, fetches, swaps `#route-result` innerHTML, `history.pushState`, reapplies map layers; aborts prior fetches; failure falls back to full navigation. `route_state` announcements via stable `#route-live` (replaced `#route-announce`). Route-option/`data-route-select` clicks now use `document` delegation so they survive the swap.
+- **Destination coords**: `destination_lat`/`destination_lng` GET params + hidden form fields; `_waypoint` uses them when no `destination_place_id` (id still wins); `_route_data` adds `description`/`distance_km`/`duration_min` per route.
+- **Server guard**: literal `origin="My location"` without valid `origin_lat/lng` → `missing_origin` — never geocoded.
+- **Route visuals**: selected route = white casing (weight 12) + solid brand line (weight 8, opacity 1); alternates dashed slate weight 5. **A/B endpoint pins** (blue A start / red B destination) from route geometry endpoints, AdvancedMarker `PinElement` or legacy circle fallback, zIndex 200.
+- **Location UI** (`_locate.html` partial in both picker + fallback From fields): small "Use my location" button (privacy promise in `title`) + dismissible inline `#loc-alert` (info/ok/error variants, role=status|alert). The whole "Your location" card section (`loc-idle/requesting/active/denied/unavailable`) removed.
+- **Default + saved My location** (`app.js`): empty From defaults to "My location" unless `localStorage["vz.origin.myLocation"]==="0"`; a page-loaded "My location"+coords reuses them (`myLocPos` seed). On load, `navigator.permissions.query` → `granted` = silent fix; `prompt`/`denied` = sticky alert nudge (no unprompted dialog). Fix → marker+circle, ok alert, optional auto-reroute when a destination exists. Picking a real place or submitting other text = `clearMyLocation()` (pref "0", visuals + coords cleared). Picker text seeded from hidden inputs via `customElements.whenDefined("gmpx-place-picker")`. Submit with "My location" but no fix → preventDefault → fix → resubmit.
+- **Panel**: `text-base font-bold` primary stats; click-to-route tip line; Refresh link carries destination coords.
+- **Tests**: `routing/tests/test_views.py` +8 (destination coords/place-id wins/invalid, My-location guard, `format=json` states incl. no-params). `core/tests/test_ui.py` updated (loc button/alert markup, `route-result`/`route-live`). `test_crossing_markers.py` +Route-here assertions.
+
+## Commands/tests run (Session 09, actual outcomes)
+| Command | Result |
+|---|---|
+| `node --check static/js/map.js static/js/app.js` | OK |
+| `docker compose run --rm web python manage.py check` | No issues (0 silenced) |
+| `docker compose run --rm web python manage.py test --settings=config.settings.test` | **Ran 247 tests, OK** (239 + 8 new; first run 1 failure — multi-line `{#…#}` comment renders literally in Django, switched partials to `{% comment %}`) |
+| `docker compose run --rm tailwind tailwindcss -i assets/tailwind/input.css -o static/css/app.css --minify` | Done |
+| `curl /` | 200; `locate-btn`/`loc-alert`/`route-result`/`route-live`/`crossing-route-here`/`id_destination_lat` present; old `loc-*` ids gone; no `{#` leaks |
+| `curl '/?destination=Vyttila&format=json'` | `route_state:"missing_origin"`, html alert rendered |
+| `curl '/?origin=My+location&origin_lat=10.0261&origin_lng=76.3125&destination=Edachira&format=json'` | `planned`, 2 routes, `duration_min`/`distance_km`/endpoint coords in payload |
+| `curl '…&destination=Pinned+location&destination_lat=10.03&destination_lng=76.35&format=json'` | `planned` — destination coords route OK |
+
+Not verified: any of it in a real browser — map click → reroute, POI placeId path + `event.stop()`, picker text seeding, silent-fix on granted permission, loc-alert states, casing/A-B pins visually, `prefers-reduced-motion` unchanged. Follow the RUNBOOK smoke checklist.
+
+## Previous milestone
+- Session 08 (isolated simulator) implemented, uncommitted. Optional run-scoped simulator live-verified: 60-vehicle run, gate close/reopen on a real Kochi crossing, simulated status overlay through bbox/status APIs + WS, reset leaves real data untouched. Browser view of vehicles/pins not yet agent-verified.
+
+## What exists now — Session 08 (uncommitted; ADR-015)
+- **`simulator` app** (always installed, inert without a run). Models `SimulationRun` (config JSON, seed, status, `active_slot` unique — max one running/paused run, stale-heartbeat recovery), `SimulatedVehicle` (synthetic path through a real crossing perpendicular to nearest track — not road/provider data), `SimulationGateEvent`, `SimulationEvent` (audit log). Migration `0001`.
+- **Status overlay**: `incidents.services.register_status_overlay` (registered by `simulator` at ready — one-way dependency). `effective_status(es)` → `EffectiveStatus(state, community, simulation)`; new states `closed_simulated`/`open_simulated` apply only while a run is active; community `closed_reported` always wins. `payloads.effective_status_payload/brief` add `simulated`/`simulation`/`community_state` to bbox, single-status, WS snapshot and push payloads — `status.simulated` is always present.
+- **Engine** (`simulator/engine.py`): `start_run` (seeded, `--force` replaces active), `tick_run` (bulk vehicle advance w/ ping-pong, due gate events, heartbeat, auto-finish), `pause/resume/stop/fail`, `reset_simulation` (refuses while active, deletes only sim rows), `drive_run` service loop, `interrupt_stale_runs`. Gate changes call `incidents.updates.publish_crossing_status`; stop/finish republishes all gated crossings (overlay reverts).
+- **Commands**: `manage.py simulator start|pause|resume|stop|status|tick|reset` (`--vehicles/--duration/--tick/--seed/--gate ID:CLOSE[:OPEN]/--random-gates/--force`); `manage.py run_simulator` = the Compose `simulator` service (`--profile simulation`), SIGTERM→graceful stop.
+- **Realtime**: `ws/simulation/` `SimulationConsumer` — `sim.control` broadcasts (`sim.run.*`), `sim.run.<pk>` group, `{"type":"subscribe","run_id"?}` → `sim.snapshot` + coarse `sim.tick` frames (vehicles+full gate map); `GET /api/simulation/` = same state for polling fallback.
+- **Routing**: `plan_route` uses `effective_statuses`; `closed_simulated` blocks like `closed_reported` (BLOCKING_STATES), `blocking_names`/`blocking_all_simulated` label "(simulated)"; `_route_plan.html` shows "Simulated gate closure — demo data" wording.
+- **Frontend** (`map.js`): violet `closed/open_simulated` pin styles + badge variants + summary text; `setupSimulation` — WS subscribe + 5 s `/api/simulation/` poll fallback, vehicle markers (violet pin/arrow or circle) interpolated via rAF (reduced-motion → jump), `#sim-banner`, `sim.tick.gates` recolour visible pins via `window.vz.applyPushedStatus`, run end clears + `requestCrossingLoad(true)`. `home.html`: sim banner, 2 badge variants, legend line. `core.views.home` map_config gains `simulationUrl`/`simulationWsUrl`.
+- **Settings**: `SIM_TICK_SECONDS` (5), `SIM_DEFAULT_VEHICLES` (60), `SIM_MAX_VEHICLES` (200), `SIM_DEFAULT_DURATION_SECONDS` (600), `SIM_PATH_LENGTH_M` (4000), `SIM_VEHICLE_MIN/MAX_SPEED_MPS` (6/14), `SIM_HEARTBEAT_STALE_SECONDS` (45); `simulator.E001–E003` validate. `.env.example` updated.
+- **Tests**: `simulator/tests/` — engine (determinism, tick, gates, lifecycle, unique slot, stale interrupt), status overlay (7 merge rules), **isolation** (reset deletes only sim rows; sim never writes `CrossingReport`/touch railways/users), API, WS consumer, commands, routing integration (simulated blocking → warning + verified alternative + revert). `incidents/test_map_api.py` expected keys +`simulated`.
+
+## Commands/tests run (Session 08, actual outcomes)
+| Command | Result |
+|---|---|
+| `node --check static/js/map.js` | OK |
+| `docker compose run --rm web python manage.py makemigrations simulator` | `0001_initial.py` created; `migrate` applied |
+| `docker compose run --rm web python manage.py check` | No issues (0 silenced) |
+| `docker compose run --rm web python manage.py test --settings=config.settings.test` | **Ran 239 tests, OK** (191 + 48 new; 1st run had 2 failures — atomic rollback hiding failed-run row, bbox key set — both fixed) |
+| `docker compose --profile simulation up -d simulator` + `simulator start --vehicles 60 --seed 42 --duration 1800 --gate 8:4:60` | run #2 live: `api/simulation/` active, 20→60 moving vehicles |
+| `GET /api/crossings/8/status/` during/after run | `open_simulated` (`simulated:true`, run meta) → `unknown` (`simulated:false`) after finish — overlay reverted |
+| `GET /api/crossings/?bbox=…` | `closed_simulated`/`open_simulated` + `simulation{run_id,gate_state}` + `community_state` |
+| WS handshake `/ws/simulation/` | 101 Switching Protocols |
+| `simulator reset` + row counts | deleted 27 sim rows only; 127 crossings / 330 tracks / reports untouched |
+| `docker compose --profile simulation stop simulator` | clean stop |
+
+Not verified: sim vehicle markers/banner/interpolation in a real browser; `sim.run.*` control frames live; route-plan UI with an active simulated block live (unit-tested only).
+
+## Status (previous milestone, superseded)
+- Session 07 (realtime status pushes) was committed as `962eaa5`. WS `/ws/crossings/` live-verified end-to-end over Redis; still not exercised in a real browser.
 - Product: Vazhithirivu (വഴിത്തിരിവ്), "Smart routes. Smarter crossings."
 - Target demo: Kochi, Kerala; future dataset target: India-wide mapped railway crossings.
 - Stack: Django 5.2 LTS, server-rendered templates, Tailwind CSS v4 (standalone CLI, ADR-008), Google Maps JavaScript API + Places API (New) (ADR-009), PostgreSQL 17 + PostGIS 3.5, Channels 4.3.2/Daphne 4.2.3 + Redis 7 (ADR-014), Docker Compose. Not yet added: HTMX/Alpine (not needed yet), Celery.
@@ -240,10 +298,11 @@ Not run: browser rendering with real Google keys (none configured), device/visua
 - Test settings still read `.env`. Any test that depends on blank keys must override settings explicitly.
 
 ## Next steps
-1. **Owner: review and commit Session 07; push `main`** (Sessions 05–07 all unpushed: `25dc8ea`, `715e3e8`, `b0dd0dd` + this tree).
-2. **Owner: browser smoke with real keys** — RUNBOOK checklists (map/markers + routing) plus the new realtime item: report closed in a second tab → pin turns red ✕ without moving the map; drop/kill the socket → markers still refresh on the ≤1/min poll; mobile bottom sheet vs Google logo/terms. Record results here.
-3. Find a Kochi route pair that produces a real `on_route` match and (if possible) a Google alternative, and verify the `verified` card live; tune the 20/50/30/100 m thresholds from real data if needed.
-4. Add a JS check to CI: at least `node --check static/js/*.js`, ideally a Playwright smoke test stubbing `google.maps` (bbox throttling, marker diffing, route switching, WS message handling).
-5. **Finish crossing labels** from `wip/crossing-labels` (the 8-step plan below), then add `label` to the bbox payload, panel, and route crossing list.
+1. **Owner: review and commit Sessions 08+09 (and push `main`** — Sessions 05–07 already committed locally, 4 unpushed commits + this tree).
+2. **Owner: browser smoke with real keys** — click a POI and an empty spot → dynamic reroute; "Route here" on a crossing; A/B pins + casing; "My location" default + permission alert flow; then the sim checklist from Session 08.
+3. Live-verify the demo flow end-to-end: plan a route through a simulated-closed crossing → warning + verified alternative card.
+4. Find a Kochi route pair with a real `on_route` match + Google alternative; verify the `verified` card live; tune 20/50/30/100 m thresholds.
+5. Add a JS check to CI: at least `node --check static/js/*.js`, ideally a Playwright smoke (marker diffing, route switching, dynamic reroute, WS handling incl. sim ticks).
+6. **Finish crossing labels** from `wip/crossing-labels` (8-step plan in this file), then surface `label` in bbox payload, panel, route list.
 6. M4 remainder: session-scoped server-side location only when navigation/alerts need it; stays browser-only until then (ADR-012). M5 (simulator) can reuse `crossing.<pk>` push groups + `source` flags — keep simulated statuses labelled and separate.
 7. Housekeeping: Google sign-in; schedule `purge_crossing_reports`; JSON 403 for API CSRF failures; ruff; slim Dockerfile.

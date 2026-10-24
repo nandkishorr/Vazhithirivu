@@ -16,17 +16,17 @@ from railways.queries import BBoxError, crossings_in_bbox, parse_bbox
 from .forms import CrossingReportForm
 from .payloads import (
     DISCLAIMER,
+    effective_status_brief,
+    effective_status_payload,
     policy_payload,
     report_payload,
-    status_brief,
-    status_payload,
 )
 from .services import (
     RateLimited,
     ReportNotAllowed,
     create_report,
-    derive_status,
-    derive_statuses,
+    effective_status,
+    effective_statuses,
     public_recent_reports,
     status_label,
 )
@@ -52,7 +52,7 @@ def _api_crossing_or_404(pk):
 
 def _render_detail(request, crossing, status_code=200):
     now = timezone.now()
-    status = derive_status(crossing, now=now)
+    status = effective_status(crossing, now=now)
     reports = public_recent_reports(crossing, now=now)
     for report in reports:
         report.age_seconds = max(
@@ -135,7 +135,7 @@ def api_crossings_in_bbox(request):
     limit = settings.MAP_CROSSINGS_LIMIT
     crossings, truncated = crossings_in_bbox(bbox, limit)
     now = timezone.now()
-    statuses = derive_statuses(crossings, now=now)
+    statuses = effective_statuses(crossings, now=now)
     return JsonResponse(
         {
             "bbox": list(bbox),
@@ -153,7 +153,7 @@ def api_crossings_in_bbox(request):
                     "source": c.source,
                     "osm_type": c.osm_type,
                     "osm_id": c.osm_id,
-                    "status": status_brief(statuses[c.pk], now),
+                    "status": effective_status_brief(statuses[c.pk], now),
                 }
                 for c in crossings
             ],
@@ -171,7 +171,7 @@ def api_crossing_status(request, pk):
     if error:
         return error
     now = timezone.now()
-    status = derive_status(crossing, now=now)
+    status = effective_status(crossing, now=now)
     reports = public_recent_reports(crossing, now=now)
     return JsonResponse(
         {
@@ -181,7 +181,7 @@ def api_crossing_status(request, pk):
                 "source": crossing.source,
             },
             "as_of": now.isoformat(),
-            "status": status_payload(status, now),
+            "status": effective_status_payload(status, now),
             "recent_reports": [
                 report_payload(r, now) for r in reports
             ],
@@ -241,12 +241,12 @@ def api_crossing_reports(request, pk):
         return JsonResponse({"error": "not_found"}, status=404)
 
     now = timezone.now()
-    status = derive_status(crossing, now=now)
+    status = effective_status(crossing, now=now)
     return JsonResponse(
         {
             "created": created,
             "report": report_payload(report, now),
-            "status": status_payload(status, now),
+            "status": effective_status_payload(status, now),
             "official": False,
             "disclaimer": DISCLAIMER,
         },

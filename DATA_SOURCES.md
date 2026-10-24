@@ -33,8 +33,8 @@ Update this file when a provider or dataset changes. Verify current terms before
 - Admin corrections: `source='manual'` rows are never touched by the importer, and `is_suppressed`/`suppression_reason`/`admin_notes` survive re-imports and reconciliation.
 
 ## Google Maps Platform
-- APIs used now: Maps JavaScript API (map display, dynamic `importLibrary` bootstrap loader) and Places API (New) via `PlaceAutocompleteElement` for the From/To fields.
-- `GOOGLE_MAPS_BROWSER_KEY` is public by design and rendered in the page; restrict it by HTTP referrer and to exactly the Maps JavaScript API and Places API (New).
+- APIs used now: Maps JavaScript API (map display, dynamic `importLibrary` bootstrap loader), Places API (New) via `PlaceAutocompleteElement` for the From/To fields, and the Geocoding API to label map-click destinations with the nearest Google place/address (ADR-016; falls back to pinned coordinates when unavailable).
+- `GOOGLE_MAPS_BROWSER_KEY` is public by design and rendered in the page; restrict it by HTTP referrer and to exactly the Maps JavaScript API, Places API (New) and Geocoding API.
 - `GOOGLE_MAPS_MAP_ID` enables cloud-based map styling and is required for `AdvancedMarkerElement` (used for the opt-in user-location marker).
 - `GOOGLE_MAPS_SERVER_KEY` is used for server-side Routes API (`computeRoutes`) route planning; it must never be sent to the browser. Restrict it to the Routes API only, no referrer restriction (server-to-server), IP restriction in production. Billing: `TRAFFIC_UNAWARE` uses the Essentials SKU (the default); `TRAFFIC_AWARE` uses the Pro SKU — opt-in only. At most ~3 routes are returned per request. Route geometry/content is never persisted in the database.
 - Map attribution and legal notices are rendered by Google itself; do not hide or cover them.
@@ -64,6 +64,11 @@ Update this file when a provider or dataset changes. Verify current terms before
 - Community reports are unverified unless a documented verification source exists.
 - Simulation status must always be labelled as simulated.
 - Do not infer open status from absence of closure reports.
+
+## Simulation data (Session 08, ADR-015)
+- `simulator_*` tables hold run-scoped demo data only: synthetic vehicle paths (generated through real crossings, perpendicular to the nearest mapped track — not real road or provider geometry), gate events, and an event log.
+- Simulated gate states overlay derived status as `closed_simulated`/`open_simulated` **only while a run is active**; every API/WS payload and badge is labelled `simulated` and must never be presented as real traffic or official status.
+- `reset` deletes only simulator-owned rows; community reports, users and OSM reference rows are out of scope by construction (tested).
 
 ## Refresh and attribution
 - Geographic import/refresh must be explicit, idempotent, logged, and separate from normal web startup.

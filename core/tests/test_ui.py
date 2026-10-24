@@ -26,7 +26,10 @@ class HomeTests(TestCase):
             "js/app.js",
             "Use my location",
             'type="button"',
-            "Location not shared",
+            'id="locate-btn"',
+            'id="loc-alert"',
+            'id="route-result"',
+            'id="route-live"',
             "No crossing selected",
             "hasn't been imported yet",
             "aren't official railway information",
@@ -97,13 +100,15 @@ class HomeTests(TestCase):
     def test_post_not_allowed(self):
         self.assertEqual(Client().post("/").status_code, 405)
 
-    def test_location_card_privacy_and_retry(self):
+    def test_location_button_privacy_and_alert(self):
         response = Client().get("/")
-        self.assertContains(response, "isn't sent to or stored by")
-        self.assertContains(response, "data-loc-error-body")
-        self.assertEqual(
-            response.content.decode().count("data-locate-retry"), 2
-        )
+        # Compact opt-in control (no card): a button whose title carries
+        # the privacy promise, plus a dismissible inline alert region.
+        self.assertContains(response, 'id="locate-btn"')
+        self.assertContains(response, "stays in this browser")
+        self.assertContains(response, 'id="loc-alert"')
+        self.assertContains(response, "data-loc-alert-body")
+        self.assertContains(response, "data-loc-alert-dismiss")
 
 
 class BadgeTests(SimpleTestCase):

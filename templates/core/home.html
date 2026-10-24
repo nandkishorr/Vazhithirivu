@@ -28,6 +28,8 @@
           <form id="route-form" method="get" action="{% url 'home' %}" class="mt-2 flex flex-col gap-3">
             <input type="hidden" name="origin_lat" id="id_origin_lat" value="{{ origin_lat }}">
             <input type="hidden" name="origin_lng" id="id_origin_lng" value="{{ origin_lng }}">
+            <input type="hidden" name="destination_lat" id="id_destination_lat" value="{{ destination_lat }}">
+            <input type="hidden" name="destination_lng" id="id_destination_lng" value="{{ destination_lng }}">
             {% if map_config %}
               <div class="field">
                 <label class="field-label" id="origin-picker-label">From</label>
@@ -37,6 +39,7 @@
                     style="width: 100%"></gmpx-place-picker>
                 <input type="hidden" name="origin" id="id_origin" value="{{ origin }}">
                 <input type="hidden" name="origin_place_id" id="id_origin_place_id" value="{{ origin_place_id }}">
+                {% include "core/_locate.html" %}
               </div>
               <div class="field">
                 <label class="field-label" id="destination-picker-label">To</label>
@@ -52,6 +55,7 @@
                 <label class="field-label" for="id_origin">From</label>
                 <input class="field-input" type="text" name="origin" id="id_origin"
                        placeholder="Starting point" autocomplete="off" value="{{ origin }}">
+                {% include "core/_locate.html" %}
               </div>
               <div class="field">
                 <label class="field-label" for="id_destination">To</label>
@@ -63,63 +67,14 @@
               {% icon "route" class="size-4" %} Find route
             </button>
           </form>
-          <div class="mt-3">
-            {% if route_state == "empty" %}
-              {% include "components/alert.html" with variant="warning" title="Add a destination" body="Enter where you're headed, then choose Find route." %}
-            {% elif route_state == "missing_origin" %}
-              {% include "components/alert.html" with variant="warning" title="Add a starting point" body="Enter where you're leaving from, then choose Find route." %}
-            {% elif route_state == "unavailable" %}
-              {% include "components/alert.html" with variant="info" title="Route planning needs the map" body="Google Maps isn't configured, so routes can't be shown. Set GOOGLE_MAPS_BROWSER_KEY to enable the map." %}
-            {% elif route_state == "planned" %}
-              {% include "routing/_route_plan.html" %}
-            {% endif %}
+          <p class="mt-1.5 text-xs text-slate-400">
+            Tip: click a place or anywhere on the map to route there, or use
+            Route here on a crossing.
+          </p>
+          <div id="route-result" class="mt-3">
+            {% include "routing/_route_result.html" %}
           </div>
-        </section>
-
-        <section aria-labelledby="location-heading">
-          <h2 id="location-heading" class="text-sm font-semibold text-slate-900">Your location</h2>
-          <div class="card mt-2" aria-live="polite">
-            <div id="loc-idle">
-              <p class="text-sm font-medium text-slate-800">Location not shared</p>
-              <p class="mt-1 text-sm text-slate-500">
-                Your location is used only after you click the button below. It stays in
-                this browser and isn't sent to or stored by Vazhithirivu. The map loads
-                crossings for the area on screen.
-              </p>
-              <button type="button" id="locate-btn" class="btn-secondary mt-3 w-full">
-                {% icon "locate-fixed" class="size-4" %} Use my location
-              </button>
-            </div>
-            <div id="loc-requesting" hidden>
-              {% include "components/spinner.html" with label="Finding your location…" %}
-            </div>
-            <div id="loc-active" hidden>
-              <p class="text-sm font-medium text-slate-800" data-loc-note>Showing your approximate location on the map.</p>
-              <button type="button" id="locate-stop" class="btn-secondary mt-3 w-full">
-                {% icon "circle-x" class="size-4" %} Stop using my location
-              </button>
-            </div>
-            <div id="loc-denied" hidden>
-              <p class="text-sm font-medium text-red-800">Location permission denied</p>
-              <p class="mt-1 text-sm text-red-700">
-                You declined the location prompt. To share your location, re-enable it in
-                your browser's site settings, then try again.
-              </p>
-              <button type="button" data-locate-retry class="btn-secondary mt-3 w-full">
-                {% icon "locate-fixed" class="size-4" %} Try again
-              </button>
-            </div>
-            <div id="loc-unavailable" hidden>
-              <p class="text-sm font-medium text-red-800">Couldn't determine your location</p>
-              <p class="mt-1 text-sm text-red-700" data-loc-error-body>
-                Your position is unavailable or timed out, or this browser doesn't support
-                geolocation.
-              </p>
-              <button type="button" data-locate-retry class="btn-secondary mt-3 w-full">
-                {% icon "locate-fixed" class="size-4" %} Try again
-              </button>
-            </div>
-          </div>
+          <p id="route-live" class="sr-only" aria-live="polite"></p>
         </section>
 
         <section aria-labelledby="crossing-heading">
@@ -148,6 +103,8 @@
                   <span data-status-variant="open_reported" hidden>{% status_badge "open_reported" %}</span>
                   <span data-status-variant="conflicting" hidden>{% status_badge "conflicting" %}</span>
                   <span data-status-variant="stale" hidden>{% status_badge "stale" %}</span>
+                  <span data-status-variant="closed_simulated" hidden>{% status_badge "closed_simulated" %}</span>
+                  <span data-status-variant="open_simulated" hidden>{% status_badge "open_simulated" %}</span>
                   <span data-status-variant="unknown">{% status_badge "unknown" %}</span>
                   <span data-source-variant="osm" hidden>{% source_badge "osm" %}</span>
                   <span data-source-variant="manual" hidden>{% source_badge "manual" %}</span>
@@ -174,10 +131,16 @@
                    class="mt-3 inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:text-brand-800 hover:underline">
                   View on OpenStreetMap
                 </a>
-                <a data-crossing-detail-link href="#"
-                   class="btn-secondary mt-3 inline-flex min-h-11 items-center gap-1.5">
-                  {% icon "users" class="size-4" %} Report or view details
-                </a>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <a data-crossing-detail-link href="#"
+                     class="btn-secondary inline-flex min-h-11 items-center gap-1.5">
+                    {% icon "users" class="size-4" %} Report or view details
+                  </a>
+                  <button type="button" id="crossing-route-here"
+                          class="btn-primary inline-flex min-h-11 items-center gap-1.5">
+                    {% icon "route" class="size-4" %} Route here
+                  </button>
+                </div>
               </div>
               <p class="mt-2 text-xs text-slate-400">
                 Crossing locations © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" class="hover:underline">OpenStreetMap contributors</a>
@@ -194,6 +157,7 @@
             <li class="flex items-start gap-2">{% status_badge "unknown" %}<span class="text-xs text-slate-500">No reliable information about this crossing.</span></li>
             <li class="flex items-start gap-2">{% status_badge "stale" %}<span class="text-xs text-slate-500">The last report is too old to rely on.</span></li>
             <li class="flex items-start gap-2">{% status_badge "conflicting" %}<span class="text-xs text-slate-500">Recent reports disagree.</span></li>
+            <li class="flex items-start gap-2">{% status_badge "closed_simulated" %}<span class="text-xs text-slate-500">A demo simulation event — never real-world status.</span></li>
           </ul>
           <p class="mt-2 text-xs text-slate-500">
             Community reports aren't official railway information. No report never means a
@@ -209,6 +173,11 @@
         <div id="crossings-status" role="status" aria-live="polite" hidden
              class="absolute left-3 top-3 z-10 max-w-[calc(100%-1.5rem)] rounded-lg bg-white/95 px-3 py-1.5 text-xs text-slate-700 shadow ring-1 ring-slate-900/10">
           <span data-crossings-status-text></span><span class="text-slate-400"> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" class="hover:underline">OpenStreetMap contributors</a></span>
+        </div>
+        <div id="sim-banner" role="status" hidden
+             class="absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-lg bg-violet-600/95 px-3 py-1.5 text-xs font-medium text-white shadow">
+          {% icon "flask-conical" class="size-3.5" %}
+          <span data-sim-banner-text>Simulation active — demo data</span>
         </div>
         <div id="map-loading" class="absolute inset-x-0 top-0 bottom-40 z-10 flex items-center justify-center bg-slate-100 lg:bottom-0">
           {% include "components/spinner.html" with label="Loading map…" %}

@@ -15,8 +15,12 @@ from django.utils import timezone
 
 from railways.models import RailwayCrossing
 
-from .payloads import DISCLAIMER, policy_payload, status_payload
-from .services import derive_status
+from .payloads import (
+    DISCLAIMER,
+    effective_status_payload,
+    policy_payload,
+)
+from .services import effective_status
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +36,11 @@ def group_name(crossing_id):
 def build_push_payload(crossing, now=None):
     """The server-derived status frame sent to subscribers."""
     now = now or timezone.now()
-    status = derive_status(crossing, now=now)
+    status = effective_status(crossing, now=now)
     return {
         "type": "crossing.status",
         "crossing_id": crossing.pk,
-        "status": status_payload(status, now),
+        "status": effective_status_payload(status, now),
         "policy": policy_payload(),
         "as_of": now.isoformat(),
         "official": False,

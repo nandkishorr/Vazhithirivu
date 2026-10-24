@@ -14,8 +14,8 @@ from django.utils import timezone
 
 from railways.models import RailwayCrossing
 
-from .payloads import DISCLAIMER, policy_payload, status_payload
-from .services import derive_statuses
+from .payloads import DISCLAIMER, effective_status_payload, policy_payload
+from .services import effective_statuses
 from .updates import group_name
 
 
@@ -100,11 +100,11 @@ class CrossingStatusConsumer(AsyncJsonWebsocketConsumer):
         """Current statuses for the whole subscription in one query."""
         now = timezone.now()
         crossings = RailwayCrossing.objects.filter(pk__in=crossing_ids)
-        statuses = derive_statuses(crossings, now=now)
+        statuses = effective_statuses(crossings, now=now)
         return {
             "type": "status.snapshot",
             "statuses": {
-                str(pk): status_payload(status, now)
+                str(pk): effective_status_payload(status, now)
                 for pk, status in statuses.items()
             },
             "policy": policy_payload(),

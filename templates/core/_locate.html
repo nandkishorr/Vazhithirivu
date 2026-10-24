@@ -1,0 +1,16 @@
+{% load ui %}
+{% comment %}Compact opt-in location control for the From field: a button plus
+a dismissible inline alert — no card. Coordinates stay in the browser and are
+only sent as form fields on an explicit route request (ADR-005).{% endcomment %}
+<div class="flex items-center gap-2">
+  <button type="button" id="locate-btn"
+          title="Your location stays in this browser — it's used only when you plan a route."
+          class="btn-ghost -mx-3 px-3 py-1 text-xs">
+    {% icon "locate-fixed" class="size-3.5" %} Use my location
+  </button>
+</div>
+<div id="loc-alert" hidden role="status"
+     class="mt-1 flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs text-sky-900">
+  <p class="min-w-0 flex-1" data-loc-alert-body></p>
+  <button type="button" data-loc-alert-dismiss class="shrink-0 rounded font-semibold hover:opacity-70" aria-label="Dismiss">&#215;</button>
+</div>

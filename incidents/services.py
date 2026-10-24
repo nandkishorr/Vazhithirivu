@@ -20,6 +20,8 @@ STATE_OPEN_REPORTED = "open_reported"
 STATE_CONFLICTING = "conflicting"
 STATE_STALE = "stale"
 STATE_UNKNOWN = "unknown"
+STATE_CLOSED_SIMULATED = "closed_simulated"
+STATE_OPEN_SIMULATED = "open_simulated"
 
 STATUS_META = {
     STATE_CLOSED_REPORTED: {
@@ -41,6 +43,20 @@ STATUS_META = {
     STATE_UNKNOWN: {
         "label": "Status unknown",
         "description": "No recent community reports for this crossing.",
+    },
+    STATE_CLOSED_SIMULATED: {
+        "label": "Simulated closed",
+        "description": (
+            "A demo simulation marked this crossing's gate closed — "
+            "simulated data, not a real-world report."
+        ),
+    },
+    STATE_OPEN_SIMULATED: {
+        "label": "Simulated open",
+        "description": (
+            "A demo simulation marked this crossing's gate open — "
+            "simulated data, not a real-world report."
+        ),
     },
 }
 
@@ -309,3 +325,85 @@ def public_recent_reports(crossing, now=None, limit=20):
             created_at__gt=stale_after
         )[:limit]
     )
+
+
+# --- Status overlay (ADR-015) ------------------------------------------------
+#
+# Optional non-community status sources (the simulator) plug in here via
+# ``register_status_overlay`` from their AppConfig.ready(). The overlay
+# provider returns ``{crossing_pk: {"gate_state": ..., "run_id": ...,
+# "label": ...}}`` for crossings it wants to mark; this module merges the
+# overlay into an ``EffectiveStatus`` without ever letting it write to or
+# mutate community-report data. The incidents app itself stays unaware of
+# the simulator app.
+
+_status_overlay_provider = None
+
+
+def register_status_overlay(provider):
+    """Register the (single) status overlay provider.
+
+    ``provider(crossings, now) -> {pk: overlay_entry}``. Called once from
+    an optional app's ``ready()``. ``None`` clears the overlay.
+    """
+    global _status_overlay_provider
+    _status_overlay_provider = provider
+
+
+@dataclass(frozen=True)
+class EffectiveStatus:
+    """Community status plus an optional simulated overlay.
+
+    ``state`` is the display state: a community ``closed_reported`` always
+    outranks a simulated gate state; otherwise an active simulation gate
+    yields ``closed_simulated``/``open_simulated``. Attributes not defined
+    here delegate to the underlying ``CrossingStatus`` (``last_report_at``,
+    ``age``, counts, …).
+    """
+
+    state: str
+    community: CrossingStatus
+    simulation: dict | None = None
+
+    def __getattr__(self, name):
+        return getattr(self.community, name)
+
+    @property
+    def simulated(self):
+        return self.simulation is not None
+
+
+def effective_statuses(crossings, now=None):
+    """Derived statuses plus any registered overlay (e.g. simulator).
+
+    Same contract as :func:`derive_statuses` — ``{pk: EffectiveStatus}``
+    for every input crossing — with one extra query when an overlay is
+    registered. Simulated overlays never mutate or re-derive the
+    underlying community status.
+    """
+    now = now or timezone.now()
+    crossings = list(crossings)
+    statuses = derive_statuses(crossings, now=now)
+    overlay = {}
+    if _status_overlay_provider is not None:
+        overlay = _status_overlay_provider(crossings, now) or {}
+    result = {}
+    for crossing in crossings:
+        community = statuses[crossing.pk]
+        sim = overlay.get(crossing.pk)
+        state = community.state
+        if sim is not None and community.state != STATE_CLOSED_REPORTED:
+            state = (
+                STATE_CLOSED_SIMULATED
+                if sim.get("gate_state") == "closed"
+                else STATE_OPEN_SIMULATED
+            )
+        result[crossing.pk] = EffectiveStatus(
+            state=state, community=community, simulation=sim
+        )
+    return result
+
+
+def effective_status(crossing, now=None):
+    """Single-crossing variant of :func:`effective_statuses`."""
+    return effective_statuses([crossing], now=now)[crossing.pk]

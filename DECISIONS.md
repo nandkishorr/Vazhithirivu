@@ -93,5 +93,82 @@ Record lasting decisions here. Add date, decision, rationale, and consequences. 
 - Rationale: marker statuses previously refreshed only on map moves or ≥60 s staleness, so a fresh closed-report could sit unseen on a visible crossing. Report frequency is already DB-bounded, so one push per durable write is cheap; subscriptions bound fan-out to what each client displays.
 - Consequences: `daphne`/`channels` join `INSTALLED_APPS` (dev `runserver` serves ASGI automatically). The consumer is read-only and anonymous-safe because statuses are public. Multi-worker deploys need `REDIS_URL`; the in-memory fallback cannot cross processes.
 
+## ADR-015 — Isolated simulator: dedicated tables + status overlay hook
+- Status: Accepted (Session 08)
+- Decision: A `simulator` app owns all demo state in `simulator_*` tables
+  (`SimulationRun`, `SimulatedVehicle`, `SimulationGateEvent`,
+  `SimulationEvent`), every row scoped to a run and cascade-deleted by it.
+  The simulator never writes `CrossingReport` rows and never mutates
+  `railways` reference rows. Simulated gate state reaches the shared read
+  pipeline through a hook in `incidents.services` —
+  `register_status_overlay(provider)` — which `simulator` registers at app
+  ready; `incidents` itself never imports the simulator.
+- `effective_status(es)` merges community status with the overlay into
+  `EffectiveStatus`: a community `closed_reported` always wins; otherwise
+  an active run's latest gate event yields the distinct states
+  `closed_simulated`/`open_simulated`. Only an *active* (running/paused)
+  run contributes — stopping/finishing a run ends the overlay immediately
+  and republishes affected crossings. At most one active run
+  (DB-enforced `active_slot`); stale `running` rows are marked stopped on
+  heartbeat loss.
+- Runtime: the optional Compose `simulator` service (`--profile
+  simulation`) runs `run_simulator`, ticking vehicles + gate events once
+  per `tick_seconds`; the same engine is manually drivable via
+  `manage.py simulator tick`. Vehicle paths are synthetic linestrings
+  through real crossings (perpendicular to the nearest mapped track) —
+  honest demo geometry, not real road/provider data. Positions publish
+  over `ws/simulation/` in coarse ticks (browser interpolates); gate
+  closures reuse `incidents.updates` so crossing pins/route warnings see
+  the effective status. `routing` treats `closed_simulated` as blocking
+  exactly like `closed_reported`, with "(simulated)" labels everywhere.
+- Rationale: hackathon demos need visible traffic and gate cycles without
+  contaminating real data. A registered overlay keeps separation
+  one-directional (`simulator` → `incidents`), labels demo data at every
+  surface, and makes the whole overlay disappear when a run ends — so
+  reset/stop can never leave fake status behind.
+- Consequences: `CrossingReport` stays community-only; all public status
+  payloads now carry `simulated` (+ `simulation`/`community_state` when
+  overlaid). Without `REDIS_URL`, sim WS frames can't cross containers —
+  `/api/simulation/` polling is the fallback. A failed `start_run` keeps a
+  `failed` run row for audit (like `OsmImportRun`).
+
 ## Updating decisions
 When a proposal becomes implemented, update its status and include the implementation reference/PR if known. Add a new ADR rather than silently rewriting a decision whose rationale materially changed.
+
+## ADR-016 — Click-to-route destinations + dynamic reroute; "My location" default origin
+- Status: Accepted (Session 09)
+- Decision: Clicking anywhere on the map (a POI via its `placeId`, or any
+  point via lat/lng) sets it as the route destination and re-plans from
+  the current origin *without a page reload*. The clicked point is
+  resolved through the **Geocoding API** so the destination is a real
+  selectable Google place/address (POI clicks keep their `placeId`; bare
+  clicks adopt the nearest result's) — pinned coordinates are only the
+  fallback when geocoding is unavailable. `GET /?…&format=json`
+  returns `{route_state, html, route_data}` where `html` is the
+  re-rendered `routing/_route_result.html` partial and `route_data` the
+  same map payload as the embedded script. `#route-result` is swapped and
+  the URL synced via `history.pushState`; on any fetch failure the client
+  falls back to a normal navigation. `destination_lat`/`destination_lng`
+  are now accepted alongside `destination_place_id` (place id still wins).
+  The crossing detail card gains a "Route here" button that routes to the
+  crossing's coordinates. Double-click zoom is disabled because click
+  events drive routing.
+- "My location" is the default origin: the From field reads "My location"
+  unless the user opted out or the page already carries an origin. The
+  *choice* is persisted in `localStorage` (`vz.origin.myLocation`); the
+  coordinates never are. On load, a fresh fix is requested silently only
+  when `navigator.permissions` already reports `granted`; on `prompt`/`denied`
+  an inline alert asks the user to enable access — never a card, never an
+  unprompted browser permission dialog. Origin submits with "My location"
+  but no fix are intercepted client-side, fixed, then resubmitted; the
+  server also rejects literal "My location" without coords
+  (`missing_origin`) so it can never be geocoded.
+- Rationale: owner-requested UX (map-first rerouting, minimal chrome).
+  Keeping reroute rendering server-side (`format=json`) avoids
+  duplicating the plan template in JS and keeps error states honest.
+- Consequences: the old "Your location" card and its `loc-*` states are
+  gone; location feedback is a small inline `#loc-alert` (role=status /
+  role=alert). Route option switching uses event delegation on
+  `data-route-select` because `#route-result` innerHTML is swapped.
+  Endpoint A/B pins are derived from route geometry endpoints. The
+  routing throttle (per-client/hour) also guards click-driven reroutes.

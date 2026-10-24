@@ -139,7 +139,72 @@ tracks 496 kB. A full southern-zone or India import (no bbox) is not yet measure
   ```
 
 ## Simulation
-- Not implemented yet (Session 08). Start only via an optional Compose profile; reset only simulation-scoped records.
+An optional, isolated demo simulator (Session 08, ADR-015). All state lives
+in `simulator_*` tables scoped to a `SimulationRun`; it never writes
+`CrossingReport` rows or mutates `railways` reference rows, and every
+payload/badge is labelled simulated. The app is fully functional with the
+simulator stopped.
+
+### Service (optional)
+```bash
+docker compose --profile simulation up -d simulator   # waits for a run
+```
+`run_simulator` ticks the *active* run once per `tick_seconds`; a paused
+run keeps its slot (heartbeat stays fresh); stop/kill marks the run
+stopped on shutdown or via stale-heartbeat recovery
+(`SIM_HEARTBEAT_STALE_SECONDS`). Without the service you can still drive
+a run manually with `manage.py simulator tick`.
+
+### Commands (inside `web`)
+```bash
+docker compose exec web python manage.py simulator start \
+  --vehicles 60 --duration 600 --seed 42 \
+  --gate 8:3:60            # crossing 8 closes at tick 3, reopens at 60
+docker compose exec web python manage.py simulator start --random-gates 2
+docker compose exec web python manage.py simulator status
+docker compose exec web python manage.py simulator pause / resume / stop
+docker compose exec web python manage.py simulator tick --n 10   # manual drive
+docker compose exec web python manage.py simulator reset          # deletes ALL sim rows
+```
+- `start` fails while a run is active (`--force` stops it first); only one
+  run may be `running`/`paused` (DB-enforced `active_slot`).
+- `--gate ID:CLOSE[:OPEN]` (repeatable); `--random-gates N` picks crossings
+  seeded by `--seed`; gate ticks are 5 s apart by default (`--tick`).
+- `reset` refuses while a run is active; it deletes **only**
+  `simulator_*` rows (verified against community reports and OSM rows in
+  `simulator/tests/test_isolation.py`).
+
+### What it does
+- Spawns N vehicles (default 60, max `SIM_MAX_VEHICLES` 200) on synthetic
+  paths through real mapped crossings (perpendicular to the nearest
+  track — demo geometry, not real road data).
+- Emits gate open/close `SimulationGateEvent`s on schedule; the latest
+  event in the *active* run overlays the derived status as
+  `closed_simulated`/`open_simulated` (violet badges, never presented as
+  community or official data). A community `closed_reported` always
+  outranks a simulated gate.
+- Simulated closures block routes exactly like reported ones
+  (`routing.services` verification flow unchanged), so a route planned
+  through a simulated-closed crossing shows the warning + alternative
+  evaluation — the demo scenario.
+- Positions/gates push over `ws(s)://<host>/ws/simulation/` (snapshot +
+  coarse `sim.tick` frames; browser interpolates between ticks —
+  no per-frame tasks). `GET /api/simulation/` returns the same state for
+  polling fallback. Stopping/finishing a run ends the overlay and
+  republishes affected crossings.
+
+### Demo scenario (live-verified Session 08)
+```bash
+docker compose --profile simulation up -d simulator
+docker compose exec web python manage.py simulator start \
+  --vehicles 60 --seed 42 --duration 600 --gate 8:3:60
+# open http://localhost:8000 — violet banner + vehicle markers;
+# crossing 8's pin shows "Simulated closed" until tick 60.
+docker compose exec web python manage.py simulator reset
+docker compose --profile simulation stop simulator
+```
+Without Redis the sim WebSocket frames can't cross from the `simulator`
+container to `web` — the `/api/simulation/` polling fallback still works.
 
 ## Realtime status pushes (Session 07, ADR-014)
 - Compose services: `redis` (`redis:7-alpine`, health-checked) starts with `docker compose up -d`. `web` gets `REDIS_URL=redis://redis:6379/0` and waits for redis. Redis backs the Channels layer **and** the default Django cache (also makes the routing throttle shared across workers).
@@ -160,7 +225,7 @@ tracks 496 kB. A full southern-zone or India import (no bbox) is not yet measure
 - Browser smoke addition: with the map open, report a crossing closed from another tab/user — the pin should turn red ✕ within a second or two, without moving the map.
 
 ## Google Maps
-- The map needs `GOOGLE_MAPS_BROWSER_KEY` (Maps JavaScript API + Places API (New); restrict by HTTP referrer and those APIs) and `GOOGLE_MAPS_MAP_ID` (Maps Management / Map Styles in Cloud Console; needed for cloud styling and AdvancedMarkerElement pins). `GOOGLE_MAPS_SERVER_KEY` powers route planning via the Routes API — never expose it to the browser.
+- The map needs `GOOGLE_MAPS_BROWSER_KEY` (Maps JavaScript API + Places API (New) + Geocoding API; restrict by HTTP referrer and those APIs) and `GOOGLE_MAPS_MAP_ID` (Maps Management / Map Styles in Cloud Console; needed for cloud styling and AdvancedMarkerElement pins). `GOOGLE_MAPS_SERVER_KEY` powers route planning via the Routes API — never expose it to the browser.
 - Blank values are OK: the app boots, `core.W001`/`core.W002` warnings are emitted, and the map region shows a not-configured (DEBUG) or generic unavailable state.
 
 ### Routes API server key (route planning)
@@ -179,14 +244,17 @@ tracks 496 kB. A full southern-zone or India import (no bbox) is not yet measure
 - [ ] With the browser key unset, the route form still works but no provider call happens ("Route planning needs the map").
 
 ### Manual smoke test with real Google keys
-Configure `GOOGLE_MAPS_BROWSER_KEY` + `GOOGLE_MAPS_MAP_ID` in `.env` (browser key restricted by HTTP referrer to `localhost:8000/*` and to Maps JavaScript API + Places API (New)), then `docker compose up -d` and check:
+Configure `GOOGLE_MAPS_BROWSER_KEY` + `GOOGLE_MAPS_MAP_ID` in `.env` (browser key restricted by HTTP referrer to `localhost:8000/*` and to Maps JavaScript API + Places API (New) + Geocoding API), then `docker compose up -d` and check:
 - [ ] Markers appear at zoom ≥ 12; the top-left chip shows "N crossings · community status, not official" (or "No mapped crossings in this area" / "Showing the first N…" when truncated).
 - [ ] DevTools Network: a small pan inside the fetched area fires no new `/api/crossings/` request; panning far (or after 60 s) fires exactly one.
 - [ ] Zooming out below 12 clears markers and shows "Zoom in to see railway crossings".
 - [ ] Clicking a marker opens the details panel; the status badge matches the pin colour/glyph; Escape/close resets it.
 - [ ] Report "closed" via `/crossings/<id>/`, return to the map: the pin turns red ✕ within ~60 s or on the next pan.
 - [ ] Place Autocomplete suggestions appear in From/To and selecting one fills the field (hidden `*_place_id` input set).
-- [ ] "Use my location": allow → pan + marker + teal accuracy circle, "±N m" note; deny → denied state with Try again; DevTools Sensors "Location unavailable"/timeout → unavailable state with Try again; Stop → marker + circle removed, "My location" cleared from From.
+- [ ] "Use my location" (small button under From): allow → pan + marker + teal accuracy circle + "Using your location (±N m)" alert; deny → sticky error alert; DevTools Sensors "Location unavailable"/timeout → error alert. Picking a real place or submitting other From text clears the fix.
+- [ ] From defaults to "My location" on a fresh visit; it stays selected after reload (choice persisted, coords re-fetched when permission is granted — otherwise an alert nudge, never an unprompted prompt).
+- [ ] Click a POI on the map → destination becomes its place and the route re-plans without a reload; click an empty spot → destination becomes the nearest geocoded address (or "Pinned location" without Geocoding API). A blue "A" pin marks the start, red "B" the destination; the selected route is a bold line over a white casing.
+- [ ] "Route here" on a crossing's detail card sets it as the destination and re-plans.
 - [ ] On an insecure origin (not localhost/HTTPS) the button shows the "secure (HTTPS) connection" message.
 - [ ] On mobile, the collapsed bottom sheet does not cover Google's logo/terms links.
 - [ ] Without `GOOGLE_MAPS_MAP_ID`: circle markers with coloured glyphs still render, and the location fix still shows the accuracy circle.

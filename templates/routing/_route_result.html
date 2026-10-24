@@ -1,0 +1,12 @@
+{% load ui %}
+{% comment %}Route result region rendered inside #route-result. Also re-rendered
+by core.views.home for ?format=json dynamic reroutes — keep it self-contained.{% endcomment %}
+{% if route_state == "empty" %}
+  {% include "components/alert.html" with variant="warning" title="Add a destination" body="Enter where you're headed, then choose Find route." %}
+{% elif route_state == "missing_origin" %}
+  {% include "components/alert.html" with variant="warning" title="Add a starting point" body="Enter where you're leaving from, or allow location access to start from your position." %}
+{% elif route_state == "unavailable" %}
+  {% include "components/alert.html" with variant="info" title="Route planning needs the map" body="Google Maps isn't configured, so routes can't be shown. Set GOOGLE_MAPS_BROWSER_KEY to enable the map." %}
+{% elif route_state == "planned" %}
+  {% include "routing/_route_plan.html" %}
+{% endif %}

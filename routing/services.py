@@ -15,7 +15,16 @@ from django.conf import settings
 from django.utils import timezone
 
 from incidents import services as incident_services
-from incidents.services import STATE_CLOSED_REPORTED, STATE_CONFLICTING
+from incidents.services import (
+    STATE_CLOSED_REPORTED,
+    STATE_CLOSED_SIMULATED,
+    STATE_CONFLICTING,
+)
+
+# States that make a crossing "blocking" for route purposes. A simulated
+# closure blocks exactly like a reported one — it is labelled everywhere
+# as demo data, and never written as a community report (ADR-015).
+BLOCKING_STATES = (STATE_CLOSED_REPORTED, STATE_CLOSED_SIMULATED)
 from railways.models import RailwayCrossing
 
 from .analysis import crossings_along_route, distances_to_crossings
@@ -84,7 +93,15 @@ class RoutePlan:
     @property
     def blocking_names(self):
         return ", ".join(
-            e.crossing.name or "Unnamed level crossing" for e in self.blocking
+            (e.crossing.name or "Unnamed level crossing")
+            + (" (simulated)" if e.status.simulation else "")
+            for e in self.blocking
+        )
+
+    @property
+    def blocking_all_simulated(self):
+        return bool(self.blocking) and all(
+            e.status.simulation for e in self.blocking
         )
 
 
@@ -149,7 +166,7 @@ def plan_route(origin, destination, client_key, now=None):
         c.pk: c
         for c in RailwayCrossing.objects.filter(pk__in=set(all_ids))
     }
-    statuses = incident_services.derive_statuses(
+    statuses = incident_services.effective_statuses(
         list(crossings_by_id.values()), now=now
     )
 
@@ -184,9 +201,7 @@ def plan_route(origin, destination, client_key, now=None):
         routes.append(route)
         if i == 0:
             blocking = [
-                e
-                for e in entries
-                if e.status.state == STATE_CLOSED_REPORTED
+                e for e in entries if e.status.state in BLOCKING_STATES
             ]
 
     # Warning level reflects the primary route only.
@@ -231,7 +246,7 @@ def plan_route(origin, destination, client_key, now=None):
             own_closed = [
                 e.crossing.name or "Unnamed level crossing"
                 for e in route.crossings
-                if e.status.state == STATE_CLOSED_REPORTED
+                if e.status.state in BLOCKING_STATES
             ]
             if own_closed:
                 verification = "passes"
