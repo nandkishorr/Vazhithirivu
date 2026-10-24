@@ -25,6 +25,66 @@ from .models import OsmImportRun, RailwayCrossing, RailwayTrack
 ADVISORY_LOCK_KEY = 72841631
 OSM_EPOCH = datetime(1970, 1, 1, tzinfo=dt_timezone.utc)
 
+# Crossing display-label context (all OSM-derived; nothing invented).
+PLACE_VALUES = frozenset(
+    {
+        "city",
+        "town",
+        "suburb",
+        "village",
+        "quarter",
+        "neighbourhood",
+        "hamlet",
+        "locality",
+    }
+)
+# Lower rank = preferred road for the crossing's derived label.
+HIGHWAY_RANK = {
+    "motorway": 0,
+    "trunk": 1,
+    "primary": 2,
+    "secondary": 3,
+    "tertiary": 4,
+    "unclassified": 5,
+    "residential": 6,
+    "living_street": 7,
+    "service": 8,
+    "track": 9,
+}
+HIGHWAY_RANK_DEFAULT = 10
+PLACE_CELL_DEG = 0.02  # ~2 km; grid index for nearest-place lookups
+PLACE_MAX_DIST_M = 3000
+PLACE_CELL_RADIUS = 2  # ceil(3000 m / ~2.2 km per cell)
+
+
+def best_name(tags, max_len=255):
+    """OSM display name preference: name:en, else name."""
+    return (tags.get("name:en") or tags.get("name") or "")[:max_len]
+
+
+def _haversine_m(lon1, lat1, lon2, lat2):
+    from math import asin, cos, pi, sin, sqrt
+
+    r = pi / 180
+    dlat = (lat2 - lat1) * r
+    dlon = (lon2 - lon1) * r
+    a = sin(dlat / 2) ** 2 + cos(lat1 * r) * cos(lat2 * r) * sin(dlon / 2) ** 2
+    return 2 * 6371000 * asin(sqrt(a))
+
+
+def _nearest_place(lon, lat, grid):
+    from math import floor
+
+    cx, cy = floor(lon / PLACE_CELL_DEG), floor(lat / PLACE_CELL_DEG)
+    best = None
+    for dx in range(-PLACE_CELL_RADIUS, PLACE_CELL_RADIUS + 1):
+        for dy in range(-PLACE_CELL_RADIUS, PLACE_CELL_RADIUS + 1):
+            for plon, plat, pname, ptype in grid.get((cx + dx, cy + dy), ()):
+                d = _haversine_m(lon, lat, plon, plat)
+                if d <= PLACE_MAX_DIST_M and (best is None or d < best[0]):
+                    best = (d, pname, ptype)
+    return best
+
 
 @dataclass(frozen=True)
 class ImportFilters:
@@ -54,6 +114,8 @@ def empty_counts():
         "reactivated": {"crossing": 0, "track": 0},
         "deactivated": {"crossing": 0, "track": 0},
         "parsed": {"crossing": 0, "track": 0},
+        "crossings_with_road": 0,
+        "crossings_with_place": 0,
         "skipped": {},
     }
 
@@ -131,6 +193,13 @@ def flush_batch(model, objs, run, counts):
             "name",
             "railway_value",
             "crossing_barrier",
+            "road_name",
+            "road_ref",
+            "road_highway",
+            "road_osm_id",
+            "nearest_place_name",
+            "nearest_place_type",
+            "nearest_place_distance_m",
             "osm_version",
             "osm_timestamp",
             "last_seen_run",
@@ -267,10 +336,10 @@ def _iter_features(path, filters, bbox, location_index):
     version/timestamp); specific_kwargs holds geometry + value fields.
     """
     fp = osmium.FileProcessor(str(path)).with_locations(location_index)
-    # C++-side pre-filter: only railway-tagged objects reach Python. Verified
-    # with pyosmium 4.3: filtered-out untagged nodes are still stored in the
-    # location index, so track ways keep their geometry.
-    fp = fp.with_filter(osmium.filter.KeyFilter("railway"))
+    # C++-side pre-filter: only objects with a railway/highway/place tag
+    # reach Python. Verified with pyosmium 4.3: filtered-out untagged nodes
+    # are still stored in the location index, so ways keep their geometry.
+    fp = fp.with_filter(osmium.filter.KeyFilter("railway", "highway", "place"))
 
     for obj in fp:
         tags = dict(obj.tags)
@@ -300,6 +369,8 @@ def _iter_features(path, filters, bbox, location_index):
                         ],
                     },
                 )
+            elif tags.get("place") in PLACE_VALUES and best_name(tags):
+                yield ("place", obj, tags, {})
             # Nodes with other railway values (station, halt, abandoned, ...)
             # and untagged way nodes are ignored.
         elif obj.is_way():
@@ -317,25 +388,28 @@ def _iter_features(path, filters, bbox, location_index):
                         continue
                 if len(coords) < 2:
                     yield ("skip", "track_invalid_geometry")
-                    continue
-                if bbox and not _coords_intersect_bbox(coords, bbox):
+                elif bbox and not _coords_intersect_bbox(coords, bbox):
                     yield ("skip", "outside_bbox")
-                    continue
-                yield (
-                    "track",
-                    obj,
-                    tags,
-                    {
-                        "osm_type": "way",
-                        "osm_id": obj.id,
-                        "geometry": LineString(coords, srid=4326),
-                        "railway_value": railway_value[:64],
-                        "usage": tags.get("usage", "")[:64],
-                        "service": tags.get("service", "")[:64],
-                    },
-                )
+                else:
+                    yield (
+                        "track",
+                        obj,
+                        tags,
+                        {
+                            "osm_type": "way",
+                            "osm_id": obj.id,
+                            "geometry": LineString(coords, srid=4326),
+                            "railway_value": railway_value[:64],
+                            "usage": tags.get("usage", "")[:64],
+                            "service": tags.get("service", "")[:64],
+                        },
+                    )
             # Ways with other railway values (abandoned, disused, platform,
             # level_crossing handled above, ...) are ignored.
+            # A way tagged with both railway and highway still counts as a
+            # candidate road for any crossing node on it.
+            if tags.get("highway"):
+                yield ("road", obj, tags, {})
         elif obj.is_relation():
             if railway_value in filters.crossing_railway_values:
                 yield ("skip", "crossing_not_node")
@@ -396,30 +470,110 @@ def _reconcile(run, scope, max_deactivate_fraction, counts, filters):
             counts["deactivated"][kind] = n
 
 
+def _road_candidate(obj, tags):
+    """Sortable road candidate for a crossing node (lower sort key wins).
+
+    Named-or-ref'd roads always beat unnamed ones, then highway rank, then
+    lowest way id for determinism.
+    """
+    name = best_name(tags)
+    ref = (tags.get("ref") or "")[:64]
+    highway = tags["highway"][:64]
+    key = (
+        0 if (name or ref) else 1,
+        HIGHWAY_RANK.get(highway, HIGHWAY_RANK_DEFAULT),
+        obj.id,
+    )
+    fields = {
+        "road_name": name,
+        "road_ref": ref,
+        "road_highway": highway,
+        "road_osm_id": obj.id,
+    }
+    return key, fields
+
+
 def _parse_and_write(path, filters, bbox, location_index, batch_size, run, dry_run):
+    from math import floor
+
     counts = empty_counts()
-    buffers = {"crossing": [], "track": []}
-    models = {"crossing": RailwayCrossing, "track": RailwayTrack}
+    # Crossings are buffered (not flushed) until the way pass is done,
+    # because the roads/places that give them a derived label arrive after
+    # the nodes in a normally ordered OSM file. Crossing counts are small
+    # (India-scale: tens of thousands), so in-memory buffering is fine.
+    crossing_rows = []
+    crossing_node_ids = set()
+    track_buf = []
+    place_grid = {}
+    road_candidates = {}  # crossing node id -> (sort_key, fields)
 
     for kind, *rest in _iter_features(path, filters, bbox, location_index):
         if kind == "skip":
             _skip(counts, rest[0])
             continue
         obj, tags, specific = rest
-        if dry_run:
-            counts["parsed"][kind] += 1
+        if kind == "place":
+            try:
+                plon, plat = obj.location.lon, obj.location.lat
+            except osmium.InvalidLocationError:
+                continue
+            cell = (
+                floor(plon / PLACE_CELL_DEG),
+                floor(plat / PLACE_CELL_DEG),
+            )
+            place_grid.setdefault(cell, []).append(
+                (plon, plat, best_name(tags), tags["place"][:32])
+            )
             continue
-        buffers[kind].append(
-            models[kind](**specific, **_common_kwargs(obj, tags, run))
-        )
-        if len(buffers[kind]) >= batch_size:
-            flush_batch(models[kind], buffers[kind], run, counts)
-            buffers[kind] = []
+        if kind == "road":
+            key, fields = _road_candidate(obj, tags)
+            for n in obj.nodes:
+                if n.ref in crossing_node_ids:
+                    prev = road_candidates.get(n.ref)
+                    if prev is None or key < prev[0]:
+                        road_candidates[n.ref] = (key, fields)
+            continue
+        if kind == "crossing":
+            crossing_node_ids.add(obj.id)
+            crossing_rows.append(
+                {**specific, **_common_kwargs(obj, tags, run)}
+            )
+        else:  # track
+            if dry_run:
+                counts["parsed"]["track"] += 1
+                continue
+            track_buf.append(
+                RailwayTrack(**specific, **_common_kwargs(obj, tags, run))
+            )
+            if len(track_buf) >= batch_size:
+                flush_batch(RailwayTrack, track_buf, run, counts)
+                track_buf = []
 
-    if not dry_run:
-        for kind, buf in buffers.items():
-            if buf:
-                flush_batch(models[kind], buf, run, counts)
+    if not dry_run and track_buf:
+        flush_batch(RailwayTrack, track_buf, run, counts)
+
+    # Enrich crossings with road/place context, then flush in batches.
+    for row in crossing_rows:
+        cand = road_candidates.get(row["osm_id"])
+        if cand is not None:
+            row.update(cand[1])
+            counts["crossings_with_road"] += 1
+        place = _nearest_place(row["location"].x, row["location"].y, place_grid)
+        if place is not None:
+            dist_m, pname, ptype = place
+            row["nearest_place_name"] = pname
+            row["nearest_place_type"] = ptype
+            row["nearest_place_distance_m"] = int(round(dist_m))
+            counts["crossings_with_place"] += 1
+
+    if dry_run:
+        counts["parsed"]["crossing"] = len(crossing_rows)
+        return counts
+
+    for i in range(0, len(crossing_rows), batch_size):
+        buf = [RailwayCrossing(**kw) for kw in crossing_rows[i : i + batch_size]]
+        if buf:
+            flush_batch(RailwayCrossing, buf, run, counts)
     return counts
 
 

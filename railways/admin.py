@@ -42,12 +42,28 @@ class _OsmFeatureAdmin(GISModelAdmin):
 
 @admin.register(RailwayCrossing)
 class RailwayCrossingAdmin(_OsmFeatureAdmin):
-    list_display = _OsmFeatureAdmin.list_display + ("is_suppressed",)
+    list_display = (
+        "id",
+        "display_name",
+        "osm_type",
+        "osm_id",
+        "railway_value",
+        "source",
+        "is_active",
+        "is_suppressed",
+    )
     list_filter = _OsmFeatureAdmin.list_filter + ("is_suppressed",)
     osm_readonly_fields = _OSM_DERIVED_COMMON + (
         "location",
         "railway_value",
         "crossing_barrier",
+        "road_name",
+        "road_ref",
+        "road_highway",
+        "road_osm_id",
+        "nearest_place_name",
+        "nearest_place_type",
+        "nearest_place_distance_m",
     )
 
 

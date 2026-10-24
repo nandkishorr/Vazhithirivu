@@ -110,9 +110,33 @@ class RailwayCrossing(OsmReferenceFeature):
     location = models.PointField()
     railway_value = models.CharField(max_length=64)
     crossing_barrier = models.CharField(max_length=64, blank=True)
+    # OSM-derived context for a human label; maintained by the importer.
+    road_name = models.CharField(max_length=255, blank=True)
+    road_ref = models.CharField(max_length=64, blank=True)
+    road_highway = models.CharField(max_length=64, blank=True)
+    road_osm_id = models.BigIntegerField(null=True, blank=True)
+    nearest_place_name = models.CharField(max_length=255, blank=True)
+    nearest_place_type = models.CharField(max_length=32, blank=True)
+    nearest_place_distance_m = models.IntegerField(null=True, blank=True)
     is_suppressed = models.BooleanField(default=False)
     suppression_reason = models.TextField(blank=True)
     admin_notes = models.TextField(blank=True)
+
+    @property
+    def display_name(self):
+        """Human label derived from OSM data; never an invented name."""
+        if self.name:
+            return self.name
+        if self.road_name:
+            label = f"Level crossing on {self.road_name}"
+            if self.road_ref and self.road_ref != self.road_name:
+                label += f" ({self.road_ref})"
+            return label
+        if self.road_ref:
+            return f"Level crossing on {self.road_ref}"
+        if self.nearest_place_name:
+            return f"Level crossing near {self.nearest_place_name}"
+        return "Unnamed level crossing"
 
     class Meta:
         constraints = [

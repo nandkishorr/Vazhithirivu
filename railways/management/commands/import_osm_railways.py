@@ -115,6 +115,9 @@ class Command(BaseCommand):
                     f"  {section}: "
                     + ", ".join(f"{k}={v}" for k, v in c[section].items())
                 )
+        for key in ("crossings_with_road", "crossings_with_place"):
+            if key in c:
+                self.stdout.write(f"  {key}: {c[key]}")
         if c.get("skipped"):
             self.stdout.write(
                 "  skipped: "
