@@ -86,6 +86,8 @@ def home(request):
             "region": "IN",
             "language": "en",
             "crossingsUrl": reverse("api_crossings"),
+            "crossingsWsUrl": "%s://%s/ws/crossings/"
+            % ("wss" if request.is_secure() else "ws", request.get_host()),
             "crossingsMinZoom": settings.MAP_CROSSINGS_MIN_ZOOM,
             "bboxMaxSpan": settings.MAP_BBOX_MAX_SPAN_DEG,
         }

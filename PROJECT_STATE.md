@@ -3,11 +3,11 @@
 > This file is the handoff point between agent sessions. Update it at the end of every meaningful work session.
 
 ## Status
-- Current milestone: **Session 06 (routing + verified crossing avoidance) committed as `f69dcc3`, 2026-10-25.** M2 essentially done; real-browser check in progress (routes + pickers confirmed working by owner). Next: finish browser smoke, crossing labels.
-- Git: `main` = `f69dcc3`, tree clean, not pushed. Branch `wip/crossing-labels` (`7693266`, pushed) holds **incomplete, untested** work on road/place-derived crossing labels. Don't merge it as is.
+- Current milestone: **Session 07 (realtime status pushes) implemented, uncommitted, 2026-10-25.** WS endpoint `/ws/crossings/` live-verified end-to-end over Redis; not yet seen in a real browser. Next: owner commits, browser smoke (live pin update + fallback), crossing labels.
+- Git: `main` = Session 07 commit on top of `b0dd0dd` (committed, not pushed; 4 unpushed commits total). Branch `wip/crossing-labels` (`7693266`, pushed) still holds **incomplete, untested** label work. Don't merge it as is.
 - Product: Vazhithirivu (വഴിത്തിരിവ്), "Smart routes. Smarter crossings."
 - Target demo: Kochi, Kerala; future dataset target: India-wide mapped railway crossings.
-- Stack: Django 5.2 LTS, server-rendered templates, Tailwind CSS v4 (standalone CLI, ADR-008), Google Maps JavaScript API + Places API (New) (ADR-009), PostgreSQL 17 + PostGIS 3.5, Docker Compose. Not yet added: HTMX/Alpine (not needed yet), Redis/Channels/Celery (Session 07+).
+- Stack: Django 5.2 LTS, server-rendered templates, Tailwind CSS v4 (standalone CLI, ADR-008), Google Maps JavaScript API + Places API (New) (ADR-009), PostgreSQL 17 + PostGIS 3.5, Channels 4.3.2/Daphne 4.2.3 + Redis 7 (ADR-014), Docker Compose. Not yet added: HTMX/Alpine (not needed yet), Celery.
 - **Every service runs as a container** (ADR-006). Do not use the host's Homebrew Postgres.
 - Owner preferences (also in AGENTS.md): Google Maps is the map provider (Leaflet removed); run one consolidated verification pass at the end of a session, not intermediate tests/screenshots.
 
@@ -22,6 +22,16 @@
 - Google server key is never rendered into templates; tests never call Google.
 
 ## What exists now
+Session 07 (uncommitted; ADR-014):
+- **Realtime pushes**: `channels==4.3.2`, `channels-redis==4.3.0`, `daphne==4.2.3` in `requirements/base.txt`; `"daphne"`+`"channels"` in `INSTALLED_APPS` (dev `runserver` serves ASGI automatically). `config/asgi.py` = `ProtocolTypeRouter` (http→Django ASGI, websocket→`AllowedHostsOriginValidator`+`AuthMiddlewareStack`+`URLRouter`). `incidents/routing.py`: `ws/crossings/` → `CrossingStatusConsumer` (`incidents/consumers.py`, `AsyncJsonWebsocketConsumer`).
+- **Protocol**: client sends `{"type":"subscribe","crossing_ids":[…]}` which **replaces** the set — strict int IDs, cap `REALTIME_MAX_SUBSCRIPTIONS` (500), min interval `REALTIME_SUBSCRIBE_MIN_SECONDS` (1 s, `rate_limited` error + `retry_after_seconds`), inactive/suppressed IDs silently dropped (never revealed). Replies: `status.snapshot` (full subscription, one `derive_statuses` query — also covers missed updates on reconnect), then `crossing.status` frames per `crossing.<pk>` group. Errors: `invalid_message`, `invalid_crossing_ids`, `rate_limited`. Statuses are public → anonymous connections allowed; nothing else is subscribable (no user-location channels exist).
+- **Publish path**: `incidents/signals.py` `post_save`/`post_delete` on `CrossingReport` → `transaction.on_commit` → `incidents/updates.py publish_crossing_status` → re-derives server-side (`derive_status`) → `group_send`. Covers new reports, admin moderation and `purge_crossing_reports` deletes. Identical consecutive payloads suppressed via cache fingerprint (`rt:push:<pk>`, 300 s); send failures log + don't raise and aren't marked as pushed. Skips inactive/suppressed crossings.
+- **Payload refactor**: `incidents/payloads.py` holds `DISCLAIMER` + `status_payload`/`status_brief`/`report_payload`/`policy_payload` (moved out of `views.py`); the HTTP API responses are unchanged apart from a new top-level `as_of` on `/api/crossings/` and `/api/crossings/<pk>/status/` (server-clock ordering so the client drops out-of-order frames).
+- **Redis/cache**: `redis:7-alpine` Compose service (health-checked); `web` gets `REDIS_URL=redis://redis:6379/0` + `depends_on`. `REDIS_URL` set → `RedisChannelLayer` **and** Redis `CACHES` (also makes the routing throttle multi-worker-safe — closes a known risk); blank → in-memory layer + locmem and `incidents.W001` warns. `incidents.E002` validates the REALTIME_* knobs.
+- **Prod**: image CMD is now `daphne -b 0.0.0.0 -p 8000 config.asgi:application` (HTTP+WS); gunicorn WSGI remains for WS-less deploys (clients poll).
+- **Frontend** (`static/js/map.js`): `cfg.crossingsWsUrl` (from `core.views.home`, `ws(s)://host/ws/crossings/`) → subscribe = marker IDs + selected, resubscribe debounced 1.1 s after `applyCrossings`/`setSelected`; `status.snapshot`/`crossing.status` applied via `as_of` ordering (bbox fetch + detail fetch also stamp `statusAsOf`); pushes update pin + open detail card; reconnect backoff to 30 s, gives up after 10 (retry on `online`), retries after `rate_limited` errors. **Fallback**: unconditional 60 s visible-only `requestLoad()` — also the only path for time-based ageing (expiry produces no push).
+- **Tests**: `incidents/tests/test_realtime.py` — `PublishTests` (payload/provenance, coalescing, suppressed/inactive skip, no-layer + send-failure no-ops), `SignalTests` (TransactionTestCase: create/moderate/delete → push), `ConsumerTests` (async communicator over the real `config.asgi.application`: snapshot, group→socket delivery, unsubscribed/suppressed get nothing, resubscribe replaces, invalid messages, id cap, rate limit). Plus `crossingsWsUrl` assertion in `core/tests/test_crossing_markers.py`.
+
 Session 01: settings split (`config/settings/{base,dev,test,prod}.py`), `/healthz/`, `/readyz/`, Dockerfile, Compose `db` + `web`.
 
 Session 02 (committed in `ef9dc94`):
@@ -98,6 +108,24 @@ Session 06 (uncommitted; ADR-013):
 - Settings: `ROUTING_*`/`ROUTE_*` knobs (timeout 8 s, 60 req/hr/client, 20/50/30/100 m thresholds, `ROUTING_GOOGLE_ROUTING_PREFERENCE=TRAFFIC_UNAWARE` — Essentials SKU; TRAFFIC_AWARE bills Pro). `config/settings/test.py` forces `GOOGLE_MAPS_SERVER_KEY=""` so tests can't reach Google. `.env`/`.env.example` now carry a working server key (Routes API enabled).
 - `incidents/services.py`: `CrossingStatus.age` property ("12 min ago").
 - Docs: ADR-013 (+ADR-004 marked implemented), DATA_SOURCES (Routes API usage/SKUs/no-storage), RUNBOOK (server-key setup + routing smoke checklist), ROADMAP M2 ticked.
+
+## Commands/tests run (Session 07, actual outcomes — single end-of-session pass)
+| Command | Result |
+|---|---|
+| `node --check static/js/map.js static/js/app.js` | OK |
+| `docker compose build web` | OK (channels 4.3.2 / channels-redis 4.3.0 / daphne 4.2.3 installed) |
+| `docker compose run --rm web python manage.py makemigrations --check --dry-run` | No changes detected |
+| `docker compose run --rm web python manage.py check` | No issues (0 silenced; REDIS_URL set → no W001) |
+| `docker compose run --rm web python manage.py test --settings=config.settings.test` | **Ran 191 tests, OK** (173 + 18 realtime) |
+| `docker compose up -d` | db + redis + web healthy (`redis:7-alpine` started by depends_on) |
+| curl `/`, `/healthz/` | 200; `"crossingsWsUrl": "ws://localhost:8000/ws/crossings/"` in map-config |
+| WS handshake, `Origin: http://localhost:8000` | **101 Switching Protocols** (Server: daphne) |
+| WS handshake, `Origin: http://evil.example.com` | 403 Access denied (AllowedHostsOriginValidator) |
+| Live e2e over real Redis (temp user/crossing-8 report via `websockets` client in a run container): subscribe → `status.snapshot` (`unknown`); `create_report` → `crossing.status` (`closed_reported`, ~40 ms later); report deleted → push back to `unknown`. Temp user/report cleaned up | All payloads carried `policy`, `as_of`, `official:false`, disclaimer |
+| `docker build -t vazhithirivu .` | OK; image CMD `daphne -b 0.0.0.0 -p 8000 config.asgi:application` |
+| Prod `check --deploy` on the built image | Only expected warnings (core.W001/W002, routing.W001, security.W004) + new `incidents.W001` correctly firing with REDIS_URL blank |
+
+Not verified: WS path in a real browser (pin colour change on push, reconnect/backoff, `rate_limited` retry, snapshot apply); gunicorn WS-less fallback only inferred (client falls back to polling when the socket never opens).
 
 ## Commands/tests run (Session 06, actual outcomes — single end-of-session pass + lead review fixes)
 | Command | Result |
@@ -199,8 +227,7 @@ Not run: browser rendering with real Google keys (none configured), device/visua
 ## Known risks / open questions
 - Google Maps path is not verified by an agent in a real browser. `.env` now holds a real browser key, Map ID, and a working server key (Routes API live-verified). Check autocomplete `gmp-select`, Map ID styling, AdvancedMarker, crossing-marker click (it listens to both `gmp-click` and `click`, so the panel may fill twice; harmless), route polyline drawing/switching/`fitBounds`, `gm_authFailure`, and that the bottom sheet doesn't cover Google's logo/terms on mobile.
 - Routing: the `verified`-alternative path is unit-tested but never observed live (Google returned no alternatives on the two Kochi pairs tried). The 20 m `on_route` threshold + 30 m track-intersection evidence kept a parallel-road route at `possible` (verified in PostGIS) — real `on_route` matches still need a route that truly crosses a track.
-- Throttle is per-process locmem cache — a multi-worker deploy needs a shared cache to enforce `ROUTING_MAX_REQUESTS_PER_HOUR`.
-- `REMOTE_ADDR` is the throttle key; behind a proxy, set `X-Forwarded-For` handling before trusting it.
+- Realtime (Session 07): browser path unverified (pin updates, reconnect/backoff). Report expiry produces no push — ageing relies on the ≤1/min visible poll, so pins can look up to ~1 min fresher than reality. Behind a reverse proxy, `Upgrade`/`Connection` headers and `wss://` are required; multi-worker requires `REDIS_URL` (in-memory layer can't cross processes). `REMOTE_ADDR` remains the routing-throttle key; behind a proxy set `X-Forwarded-For` handling before trusting it. The throttle/routing cache is shared via Redis only when `REDIS_URL` is set.
 - Real OSM data lives only in the local dev DB volume (`pgdata`). Another machine must download and import it again (RUNBOOK "OSM import"). `data/osm/*.pbf` is git-ignored.
 - Template tests only grep HTML; they can't catch JS syntax errors (the loader bug above slipped past them). Consider a `node --check` step or a browser smoke test in CI.
 - Google terms: Places/Maps content caching/storage limits; Google route alternatives can't guarantee crossing avoidance (ADR-004).
@@ -213,10 +240,10 @@ Not run: browser rendering with real Google keys (none configured), device/visua
 - Test settings still read `.env`. Any test that depends on blank keys must override settings explicitly.
 
 ## Next steps
-1. **Owner: browser smoke test with real keys** using the RUNBOOK checklists (map/markers + the new routing section). Cover route display, "Use this route" switching, a real closed-report warning, and mobile (bottom sheet vs Google logo/terms). Record the results here.
-2. Owner: review and commit Session 06; push `main` (`25dc8ea`/`715e3e8` also unpushed).
+1. **Owner: review and commit Session 07; push `main`** (Sessions 05–07 all unpushed: `25dc8ea`, `715e3e8`, `b0dd0dd` + this tree).
+2. **Owner: browser smoke with real keys** — RUNBOOK checklists (map/markers + routing) plus the new realtime item: report closed in a second tab → pin turns red ✕ without moving the map; drop/kill the socket → markers still refresh on the ≤1/min poll; mobile bottom sheet vs Google logo/terms. Record results here.
 3. Find a Kochi route pair that produces a real `on_route` match and (if possible) a Google alternative, and verify the `verified` card live; tune the 20/50/30/100 m thresholds from real data if needed.
-4. Add a JS check to CI: at least `node --check static/js/*.js`, ideally a Playwright smoke test stubbing `google.maps` (bbox throttling, marker diffing, route switching).
-5. **Finish crossing labels** from `wip/crossing-labels` (the 8-step plan above), then add `label` to the bbox payload, panel, and route crossing list.
-6. M4 remainder: session-scoped server-side location only when navigation/alerts need it; stays browser-only until then (ADR-012). If routing needs "my location" as origin, pass it client-side opt-in per request, never stored.
-7. Housekeeping: Google sign-in; schedule `purge_crossing_reports`; JSON 403 for API CSRF failures; ruff; shared cache for the routing throttle if multi-worker; slim Dockerfile.
+4. Add a JS check to CI: at least `node --check static/js/*.js`, ideally a Playwright smoke test stubbing `google.maps` (bbox throttling, marker diffing, route switching, WS message handling).
+5. **Finish crossing labels** from `wip/crossing-labels` (the 8-step plan below), then add `label` to the bbox payload, panel, and route crossing list.
+6. M4 remainder: session-scoped server-side location only when navigation/alerts need it; stays browser-only until then (ADR-012). M5 (simulator) can reuse `crossing.<pk>` push groups + `source` flags — keep simulated statuses labelled and separate.
+7. Housekeeping: Google sign-in; schedule `purge_crossing_reports`; JSON 403 for API CSRF failures; ruff; slim Dockerfile.

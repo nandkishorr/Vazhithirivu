@@ -34,6 +34,7 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 - [~] Status freshness and confidence display (done on crossing detail page, JSON API and the map marker panel; browser marker-click not yet verified).
 - [x] Route-aware incident evaluation. Evidence: Session 06, `plan_route` bulk-derives statuses and sets warning levels (closed on/near route, conflicting).
 - [x] Reroute prompt with accept/reject actions. Evidence: Session 06, user-confirmed `[data-route-select]` switching with aria-live announcements; verified-only avoidance claims.
+- [x] Realtime status pushes with polling fallback. Evidence: Session 07, `/ws/crossings/` (bounded ID subscriptions, snapshot-on-subscribe, server-derived pushes) + ≤1/min map refresh; ADR-014. Not yet exercised in a real browser.
 
 ## M4 — Opt-in real-user location
 - [x] Explicit permission action (browser-only, click-triggered `getCurrentPosition`; coordinates never leave the browser).

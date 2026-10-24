@@ -34,6 +34,9 @@ env = environ.Env(
     REPORT_MIN_FLIP_SECONDS=(int, 30),
     REPORT_MAX_PER_HOUR=(int, 20),
     REPORT_RETENTION_DAYS=(int, 30),
+    REDIS_URL=(str, ""),
+    REALTIME_MAX_SUBSCRIPTIONS=(int, 500),
+    REALTIME_SUBSCRIBE_MIN_SECONDS=(float, 1.0),
 )
 
 # .env is optional: real environment variables always take precedence.
@@ -48,6 +51,8 @@ ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS")
 CSRF_TRUSTED_ORIGINS = env.list("DJANGO_CSRF_TRUSTED_ORIGINS")
 
 INSTALLED_APPS = [
+    "daphne",
+    "channels",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -90,6 +95,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "config.wsgi.application"
+ASGI_APPLICATION = "config.asgi.application"
 
 DATABASES = {"default": env.db("DATABASE_URL")}
 if (
@@ -161,6 +167,36 @@ REPORT_DUPLICATE_WINDOW_MINUTES = env.int("REPORT_DUPLICATE_WINDOW_MINUTES")
 REPORT_MIN_FLIP_SECONDS = env.int("REPORT_MIN_FLIP_SECONDS")
 REPORT_MAX_PER_HOUR = env.int("REPORT_MAX_PER_HOUR")
 REPORT_RETENTION_DAYS = env.int("REPORT_RETENTION_DAYS")
+
+# Realtime crossing-status pushes (incidents app; see ADR-014). With
+# REDIS_URL set, Redis backs both the WebSocket channel layer and the
+# default cache, so pushes and throttles are shared across workers.
+# Without it, a per-process in-memory layer/cache is used, which only
+# works in a single-process server (dev runserver, tests).
+REDIS_URL = env("REDIS_URL")
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [REDIS_URL]},
+        }
+    }
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+            "KEY_PREFIX": "vz",
+        }
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
+        }
+    }
+
+REALTIME_MAX_SUBSCRIPTIONS = env.int("REALTIME_MAX_SUBSCRIPTIONS")
+REALTIME_SUBSCRIBE_MIN_SECONDS = env.float("REALTIME_SUBSCRIBE_MIN_SECONDS")
 
 LOGGING = {
     "version": 1,

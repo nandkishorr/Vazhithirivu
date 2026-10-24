@@ -14,6 +14,14 @@ services:
       timeout: 5s
       retries: 12
 
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   web:
     build:
       context: .
@@ -25,6 +33,9 @@ services:
     environment:
       DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.dev}
       DATABASE_URL: postgis://${POSTGRES_USER:-vazhithirivu}:${POSTGRES_PASSWORD:-vazhithirivu}@db:5432/${POSTGRES_DB:-vazhithirivu}
+      # Channel layer + shared cache (ADR-014). Set REDIS_URL to empty in
+      # a compose override to run with the in-process fallback instead.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     command: python manage.py runserver 0.0.0.0:8000
     ports:
       - "${WEB_PORT:-8000}:8000"
@@ -32,6 +43,8 @@ services:
       - .:/app
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test:

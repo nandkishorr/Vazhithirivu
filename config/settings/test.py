@@ -8,3 +8,14 @@ PASSWORD_HASHERS = [
 # real key, provider tests construct GoogleRoutesProvider themselves and
 # mock urlopen.
 GOOGLE_MAPS_SERVER_KEY = ""
+
+# Tests never touch Redis, even if .env/compose set REDIS_URL: the
+# channel layer and cache stay in-process.
+CHANNEL_LAYERS = {
+    "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"},
+}
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    }
+}

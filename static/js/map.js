@@ -135,6 +135,7 @@
 
     window.vz.crossingMarkers = new Map();
     let selectedId = null;
+    let selectedStatusAsOf = null;
     let statusTimer = null;
     let statusFetch = null;
 
@@ -268,6 +269,7 @@
         })
         .then((payload) => {
           if (selectedId !== id || controller.signal.aborted) return;
+          if (payload.as_of) selectedStatusAsOf = payload.as_of;
           renderStatus(payload);
           const state = KNOWN_STATES.includes(payload.status && payload.status.state)
             ? payload.status.state
@@ -345,6 +347,7 @@
         const cur = window.vz.crossingMarkers.get(id);
         if (cur) applyMarkerVisual(cur);
       }
+      scheduleResubscribe();
     }
 
     function showDetail(c) {
@@ -381,6 +384,7 @@
       if (errorEl) errorEl.hidden = true;
       if (emptyEl) emptyEl.hidden = true;
       detailEl.hidden = false;
+      selectedStatusAsOf = null;
       setSelected(c.id);
       startStatusRefresh(c.id);
       loadStatus(c.id);
@@ -452,7 +456,7 @@
       }
     }
 
-    function applyCrossings(list) {
+    function applyCrossings(list, asOf) {
       const seen = new Set();
       list.forEach((c) => {
         seen.add(c.id);
@@ -462,10 +466,13 @@
           const changed = entry.state !== state;
           entry.data = c;
           entry.state = state;
+          if (asOf) entry.statusAsOf = asOf;
           setMarkerMap(entry, map);
           if (changed) applyMarkerVisual(entry);
         } else {
-          window.vz.crossingMarkers.set(c.id, createMarker(c));
+          const created = createMarker(c);
+          created.statusAsOf = asOf || null;
+          window.vz.crossingMarkers.set(c.id, created);
         }
       });
       // Remove markers no longer in view — except the selected one.
@@ -475,6 +482,7 @@
           window.vz.crossingMarkers.delete(id);
         }
       });
+      scheduleResubscribe();
     }
 
     function removeAllExceptSelected() {
@@ -558,7 +566,7 @@
           lastBBox = box;
           lastFetchedAt = Date.now();
           const list = body.crossings || [];
-          applyCrossings(list);
+          applyCrossings(list, body.as_of);
           const n = body.count != null ? body.count : list.length;
           if (body.truncated) {
             setChip("Showing the first " + n + " crossings \u2014 zoom in to see all");
@@ -617,6 +625,134 @@
         requestLoad();
       }
     });
+
+    // Refresh statuses periodically while the page is visible. This is
+    // both the WebSocket fallback and the only way time-based ageing
+    // (fresh -> stale -> unknown) reaches the client — a report expiring
+    // produces no push. requestLoad() skips fresh/covered views, so this
+    // costs at most one small fetch per minute per tab.
+    setInterval(() => {
+      if (!document.hidden) requestLoad();
+    }, 60000);
+
+    // --- Realtime pushes (ADR-014) -----------------------------------------
+    // Subscriptions follow the marker set plus the selected crossing.
+    // Messages carry the same server-derived status payload as the HTTP
+    // API; reconnects resubscribe and receive a fresh snapshot.
+    const rt = { ws: null, attempts: 0, resubTimer: null, retryTimer: null };
+
+    function subscribedIds() {
+      const ids = Array.from(window.vz.crossingMarkers.keys());
+      if (selectedId !== null && !ids.includes(selectedId)) ids.push(selectedId);
+      return ids;
+    }
+
+    function sendSubscribe() {
+      if (rt.ws && rt.ws.readyState === WebSocket.OPEN) {
+        rt.ws.send(JSON.stringify({ type: "subscribe", crossing_ids: subscribedIds() }));
+      }
+    }
+
+    function scheduleResubscribe() {
+      if (rt.resubTimer !== null) return;
+      // Debounce above the server's per-connection subscribe minimum so
+      // pan-driven resubscribes don't hit the rate limit.
+      rt.resubTimer = setTimeout(() => {
+        rt.resubTimer = null;
+        sendSubscribe();
+      }, 1100);
+    }
+
+    function applyPushedStatus(id, status, policy, asOf) {
+      if (!Number.isInteger(id)) return;
+      const entry = window.vz.crossingMarkers.get(id);
+      if (entry) {
+        // Ignore out-of-order frames older than what we already applied.
+        if (asOf && entry.statusAsOf && asOf < entry.statusAsOf) return;
+        if (asOf) entry.statusAsOf = asOf;
+        const state = normalizeState(status && status.state);
+        if (entry.data) entry.data.status = status;
+        if (entry.state !== state) {
+          entry.state = state;
+          applyMarkerVisual(entry);
+        }
+      }
+      if (
+        id === selectedId &&
+        status &&
+        !(asOf && selectedStatusAsOf && asOf < selectedStatusAsOf)
+      ) {
+        if (asOf) selectedStatusAsOf = asOf;
+        renderStatus({ status: status, policy: policy || {} });
+      }
+    }
+
+    function handleRealtimeMessage(event) {
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch (err) {
+        return;
+      }
+      if (!msg || typeof msg !== "object") return;
+      if (msg.type === "status.snapshot" && msg.statuses) {
+        Object.keys(msg.statuses).forEach((key) => {
+          applyPushedStatus(Number(key), msg.statuses[key], msg.policy, msg.as_of);
+        });
+      } else if (msg.type === "crossing.status") {
+        applyPushedStatus(Number(msg.crossing_id), msg.status, msg.policy, msg.as_of);
+      } else if (msg.type === "error" && msg.code === "rate_limited") {
+        const waitMs = Math.max(200, Math.ceil((msg.retry_after_seconds || 1) * 1000));
+        if (rt.resubTimer) clearTimeout(rt.resubTimer);
+        rt.resubTimer = setTimeout(() => {
+          rt.resubTimer = null;
+          sendSubscribe();
+        }, waitMs);
+      }
+    }
+
+    function connectRealtime() {
+      if (!cfg.crossingsWsUrl || rt.attempts >= 10) return;
+      let ws;
+      try {
+        ws = new WebSocket(cfg.crossingsWsUrl);
+      } catch (err) {
+        rt.attempts = 10;
+        return;
+      }
+      rt.ws = ws;
+      ws.onopen = () => {
+        rt.attempts = 0;
+        sendSubscribe();
+      };
+      ws.onmessage = handleRealtimeMessage;
+      ws.onerror = () => {
+        try {
+          ws.close();
+        } catch (err) {
+          /* closing an errored socket must not throw */
+        }
+      };
+      ws.onclose = () => {
+        if (rt.ws !== ws) return;
+        rt.ws = null;
+        rt.attempts += 1;
+        if (rt.attempts >= 10) return;
+        const delay =
+          Math.min(30000, 1000 * Math.pow(2, rt.attempts)) +
+          Math.floor(Math.random() * 500);
+        rt.retryTimer = setTimeout(connectRealtime, delay);
+      };
+    }
+
+    window.addEventListener("online", () => {
+      if (!rt.ws || rt.ws.readyState !== WebSocket.OPEN) {
+        rt.attempts = 0;
+        connectRealtime();
+      }
+    });
+
+    connectRealtime();
   }
 
 

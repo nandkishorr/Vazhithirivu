@@ -30,7 +30,7 @@ Commands marked *(verified)* were run successfully in Session 01 (2026-10-25) on
 - Prod deploy check: `docker compose run --rm -e DJANGO_SETTINGS_MODULE=config.settings.prod -e DJANGO_SECRET_KEY=<50+ random chars> -e DJANGO_ALLOWED_HOSTS=example.com web python manage.py check --deploy` *(verified)*. Only `security.W004` (HSTS) remains until `DJANGO_SECURE_HSTS_SECONDS` is set.
 
 ## Production notes (not yet deployed)
-- Image default CMD: `gunicorn config.wsgi:application --bind 0.0.0.0:8000`. The image runs as non-root `app`, and static files are collected at build time (WhiteNoise compressed manifest storage in prod).
+- Image default CMD: `daphne -b 0.0.0.0 -p 8000 config.asgi:application` (HTTP + WebSocket; ADR-014). `gunicorn config.wsgi:application --bind 0.0.0.0:8000` remains available for a WebSocket-less deploy. The image runs as non-root `app`, and static files are collected at build time (WhiteNoise compressed manifest storage in prod).
 - Prod requires `DJANGO_SECRET_KEY` (no `django-insecure…` or `change-me` values) and `DJANGO_ALLOWED_HOSTS`. `DJANGO_SECURE_SSL_REDIRECT` defaults to true, and `/healthz/` and `/readyz/` are exempt from the redirect.
 - Build the prod image with base requirements: `docker build -t vazhithirivu .` (the `REQUIREMENTS` build arg defaults to `requirements/base.txt`).
 
@@ -141,6 +141,24 @@ tracks 496 kB. A full southern-zone or India import (no bbox) is not yet measure
 ## Simulation
 - Not implemented yet (Session 08). Start only via an optional Compose profile; reset only simulation-scoped records.
 
+## Realtime status pushes (Session 07, ADR-014)
+- Compose services: `redis` (`redis:7-alpine`, health-checked) starts with `docker compose up -d`. `web` gets `REDIS_URL=redis://redis:6379/0` and waits for redis. Redis backs the Channels layer **and** the default Django cache (also makes the routing throttle shared across workers).
+- No `REDIS_URL` → per-process in-memory channel layer + locmem cache. Works for single-process dev (`runserver`); pushes can't cross processes and `manage.py check` warns (`incidents.W001`).
+- `runserver` serves HTTP **and** WebSockets automatically in dev (`daphne` is in `INSTALLED_APPS`). Prod image CMD is `daphne -b 0.0.0.0 -p 8000 config.asgi:application` (serves both); `gunicorn config.wsgi:application` still works but is WebSocket-less — clients then rely on the polling fallback.
+- Endpoint: `ws(s)://<host>/ws/crossings/` (public, read-only; `AllowedHostsOriginValidator` enforces the Origin). Client sends `{"type":"subscribe","crossing_ids":[…]}` (replaces the set; max `REALTIME_MAX_SUBSCRIPTIONS`, invalid/inactive/suppressed IDs silently dropped, min interval `REALTIME_SUBSCRIBE_MIN_SECONDS` between subscribes). Server replies `{"type":"status.snapshot","statuses":{…},"policy":{…},"as_of":…,"official":false,"disclaimer":…}` and then `{"type":"crossing.status","crossing_id":…,"status":{…},…}` on each committed report/moderation/purge change for subscribed crossings. Errors: `invalid_message`, `invalid_crossing_ids`, `rate_limited` (+`retry_after_seconds`).
+- Server authority: every push re-derives status from committed reports (never trust client-supplied state); identical consecutive statuses are coalesced via the cache. A report expiring generates no push — the client's ≤1/min visible polling (existing `requestLoad`, same staleness guards) is both the freshness floor for time-based ageing and the fallback when WebSockets are unavailable.
+- Quick check (with `docker compose up -d` running):
+  ```bash
+  curl -i -N --max-time 3 \
+    -H "Connection: Upgrade" -H "Upgrade: websocket" \
+    -H "Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==" \
+    -H "Sec-WebSocket-Version: 13" \
+    -H "Origin: http://localhost:8000" \
+    http://localhost:8000/ws/crossings/
+  ```
+  Expect `101 Switching Protocols` (the socket then waits for a subscribe message). Behind a reverse proxy, forward `Upgrade`/`Connection` headers and use `wss://`.
+- Browser smoke addition: with the map open, report a crossing closed from another tab/user — the pin should turn red ✕ within a second or two, without moving the map.
+
 ## Google Maps
 - The map needs `GOOGLE_MAPS_BROWSER_KEY` (Maps JavaScript API + Places API (New); restrict by HTTP referrer and those APIs) and `GOOGLE_MAPS_MAP_ID` (Maps Management / Map Styles in Cloud Console; needed for cloud styling and AdvancedMarkerElement pins). `GOOGLE_MAPS_SERVER_KEY` powers route planning via the Routes API — never expose it to the browser.
 - Blank values are OK: the app boots, `core.W001`/`core.W002` warnings are emitted, and the map region shows a not-configured (DEBUG) or generic unavailable state.
@@ -185,6 +203,7 @@ Configure `GOOGLE_MAPS_BROWSER_KEY` + `GOOGLE_MAPS_MAP_ID` in `.env` (browser ke
 - `web` exits with `ImproperlyConfigured`: check `DATABASE_URL` scheme is `postgis://` and prod vars are set.
 - `/readyz/` 503: `docker compose ps db`, `docker compose logs db web`.
 - Slow DB on Apple Silicon: expected (amd64 emulation).
-- Redis: not used yet. It will be added with Channels/Celery (Session 07+).
+- WebSocket fails / no live updates: check `docker compose ps redis`, `REDIS_URL`, that the server is Daphne/`runserver` (not gunicorn), and proxy `Upgrade` headers. The map still works via the polling fallback.
+- Redis: channel layer + default cache (Session 07). `docker compose logs redis`; flush with `docker compose exec redis redis-cli FLUSHALL` (safe — only transient layer/cache state).
 - Route failure: check provider key, quota, network and provider abstraction logs; never fabricate fallback durations.
 - Crossing absent: check OSM coverage, import filters and admin correction workflow.

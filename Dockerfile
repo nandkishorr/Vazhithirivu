@@ -61,4 +61,6 @@ RUN useradd --create-home --shell /bin/bash app \
 USER app
 
 EXPOSE 8000
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
+# Daphne serves both HTTP and WebSockets (ADR-014). For a WebSocket-less
+# deploy, gunicorn config.wsgi:application still works (polling fallback).
+CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "config.asgi:application"]

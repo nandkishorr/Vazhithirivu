@@ -61,6 +61,9 @@ class CrossingMarkerTests(TestCase):
 
         config = map_config_json(response)
         self.assertEqual(config["crossingsUrl"], "/api/crossings/")
+        self.assertEqual(
+            config["crossingsWsUrl"], "ws://testserver/ws/crossings/"
+        )
         self.assertEqual(config["crossingsMinZoom"], 12)
         self.assertEqual(config["bboxMaxSpan"], 1.5)
 

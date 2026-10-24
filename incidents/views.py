@@ -14,6 +14,13 @@ from railways.models import RailwayCrossing
 from railways.queries import BBoxError, crossings_in_bbox, parse_bbox
 
 from .forms import CrossingReportForm
+from .payloads import (
+    DISCLAIMER,
+    policy_payload,
+    report_payload,
+    status_brief,
+    status_payload,
+)
 from .services import (
     RateLimited,
     ReportNotAllowed,
@@ -22,11 +29,6 @@ from .services import (
     derive_statuses,
     public_recent_reports,
     status_label,
-)
-
-DISCLAIMER = (
-    "Community-sourced and unverified; not official railway information. "
-    "Absence of reports does not mean a gate is open."
 )
 
 
@@ -46,58 +48,6 @@ def _api_crossing_or_404(pk):
         )
     except RailwayCrossing.DoesNotExist:
         return None, JsonResponse({"error": "not_found"}, status=404)
-
-
-def _status_payload(crossing, status, now):
-    age = None
-    if status.last_report_at is not None:
-        age = max(0, int((now - status.last_report_at).total_seconds()))
-    return {
-        "state": status.state,
-        "label": status_label(status.state)["label"],
-        "last_report_at": (
-            status.last_report_at.isoformat() if status.last_report_at else None
-        ),
-        "last_report_age_seconds": age,
-        "last_reported_state": status.last_reported_state,
-        "supporting_reports": status.supporting_reports,
-        "opposing_reports": status.opposing_reports,
-        "fresh_until": (
-            status.fresh_until.isoformat() if status.fresh_until else None
-        ),
-    }
-
-
-def _status_brief(status, now):
-    """The four status fields exposed by the bbox map endpoint."""
-    payload = _status_payload(None, status, now)
-    return {
-        key: payload[key]
-        for key in (
-            "state",
-            "label",
-            "last_report_at",
-            "last_report_age_seconds",
-        )
-    }
-
-
-def _report_payload(report, now):
-    return {
-        "state": report.reported_state,
-        "created_at": report.created_at.isoformat(),
-        "age_seconds": max(0, int((now - report.created_at).total_seconds())),
-        "source": report.source,
-        "verified": False,
-    }
-
-
-def _policy_payload():
-    return {
-        "fresh_minutes": settings.REPORT_FRESH_MINUTES,
-        "stale_minutes": settings.REPORT_STALE_MINUTES,
-        "conflict_window_minutes": settings.REPORT_CONFLICT_WINDOW_MINUTES,
-    }
 
 
 def _render_detail(request, crossing, status_code=200):
@@ -189,6 +139,7 @@ def api_crossings_in_bbox(request):
     return JsonResponse(
         {
             "bbox": list(bbox),
+            "as_of": now.isoformat(),
             "count": len(crossings),
             "limit": limit,
             "truncated": truncated,
@@ -202,7 +153,7 @@ def api_crossings_in_bbox(request):
                     "source": c.source,
                     "osm_type": c.osm_type,
                     "osm_id": c.osm_id,
-                    "status": _status_brief(statuses[c.pk], now),
+                    "status": status_brief(statuses[c.pk], now),
                 }
                 for c in crossings
             ],
@@ -229,11 +180,12 @@ def api_crossing_status(request, pk):
                 "name": crossing.name or "",
                 "source": crossing.source,
             },
-            "status": _status_payload(crossing, status, now),
+            "as_of": now.isoformat(),
+            "status": status_payload(status, now),
             "recent_reports": [
-                _report_payload(r, now) for r in reports
+                report_payload(r, now) for r in reports
             ],
-            "policy": _policy_payload(),
+            "policy": policy_payload(),
             "official": False,
             "disclaimer": DISCLAIMER,
         }
@@ -293,8 +245,8 @@ def api_crossing_reports(request, pk):
     return JsonResponse(
         {
             "created": created,
-            "report": _report_payload(report, now),
-            "status": _status_payload(crossing, status, now),
+            "report": report_payload(report, now),
+            "status": status_payload(status, now),
             "official": False,
             "disclaimer": DISCLAIMER,
         },
