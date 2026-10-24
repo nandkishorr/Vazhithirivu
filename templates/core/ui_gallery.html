@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% load static ui %}
+{% block title %}UI gallery — Vazhithirivu{% endblock %}
+{% block body %}
+<div class="mx-auto max-w-3xl space-y-10 px-4 py-8">
+  <div class="rounded-xl border-2 border-dashed border-amber-400 bg-amber-50 p-4 text-center">
+    <p class="font-semibold text-amber-900">Demo content — sample states for design review, not real data.</p>
+  </div>
+
+  <section aria-labelledby="g-buttons">
+    <h1 id="g-buttons" class="text-lg font-semibold">Buttons</h1>
+    <div class="mt-3 flex flex-wrap gap-3">
+      <button type="button" class="btn-primary">Primary</button>
+      <button type="button" class="btn-secondary">Secondary</button>
+      <button type="button" class="btn-ghost">Ghost</button>
+      <button type="button" class="btn-primary" disabled>Disabled</button>
+      <button type="button" class="btn-secondary">{% icon "locate-fixed" class="size-4" %} With icon</button>
+    </div>
+  </section>
+
+  <section aria-labelledby="g-fields">
+    <h1 id="g-fields" class="text-lg font-semibold">Form fields</h1>
+    <div class="card mt-3 grid gap-4 sm:grid-cols-2">
+      <div class="field">
+        <label class="field-label" for="g-from">From</label>
+        <input class="field-input" id="g-from" type="text" placeholder="Starting point">
+      </div>
+      <div class="field">
+        <label class="field-label" for="g-to">To</label>
+        <input class="field-input" id="g-to" type="text" placeholder="Destination">
+      </div>
+      <div class="field">
+        <label class="field-label" for="g-disabled">Disabled</label>
+        <input class="field-input" id="g-disabled" type="text" placeholder="Unavailable" disabled>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="g-badges">
+    <h1 id="g-badges" class="text-lg font-semibold">Status badges</h1>
+    <div class="mt-3 flex flex-wrap gap-2">
+      {% status_badge "open" %}
+      {% status_badge "closed" %}
+      {% status_badge "unknown" %}
+      {% status_badge "stale" %}
+      {% status_badge "conflicting" %}
+      {% status_badge "bogus" %}
+    </div>
+    <h2 class="mt-5 text-lg font-semibold">Source badges</h2>
+    <div class="mt-3 flex flex-wrap gap-2">
+      {% source_badge "osm" %}
+      {% source_badge "community" %}
+      {% source_badge "simulated" %}
+      {% source_badge "bogus" %}
+    </div>
+  </section>
+
+  <section aria-labelledby="g-alerts">
+    <h1 id="g-alerts" class="text-lg font-semibold">Alerts</h1>
+    <div class="mt-3 space-y-3">
+      {% include "components/alert.html" with variant="info" title="Info" body="Something you might want to know." %}
+      {% include "components/alert.html" with variant="success" title="Success" body="That worked." %}
+      {% include "components/alert.html" with variant="warning" title="Warning" body="Something needs your attention." %}
+      {% include "components/alert.html" with variant="error" title="Error" body="Something went wrong." %}
+    </div>
+  </section>
+
+  <section aria-labelledby="g-loading">
+    <h1 id="g-loading" class="text-lg font-semibold">Loading</h1>
+    <div class="card mt-3 space-y-4">
+      <div>{% include "components/spinner.html" with label="Finding your location…" %}</div>
+      {% include "components/skeleton.html" %}
+    </div>
+  </section>
+
+  <section aria-labelledby="g-empty">
+    <h1 id="g-empty" class="text-lg font-semibold">Empty state</h1>
+    <div class="mt-3">
+      {% include "components/empty_state.html" with title="No crossing selected" body="Crossing data from OpenStreetMap hasn't been imported yet." icon="map-pin-off" %}
+    </div>
+  </section>
+
+  <section aria-labelledby="g-error">
+    <h1 id="g-error" class="text-lg font-semibold">Error state</h1>
+    <div class="mt-3">
+      {% include "components/error_state.html" with title="Map unavailable" body="The map couldn't be loaded." retry_label="Try again" %}
+    </div>
+  </section>
+
+  <section aria-labelledby="g-states">
+    <h1 id="g-states" class="text-lg font-semibold">Named states</h1>
+    <div class="mt-3 space-y-6">
+      <div class="card">
+        <h2 class="text-sm font-semibold">no-location</h2>
+        <p class="mt-1 text-sm text-slate-600">Location not shared — used only after you click, stays on this device.</p>
+      </div>
+      <div class="card">
+        <h2 class="text-sm font-semibold">permission-denied</h2>
+        <p class="mt-1 text-sm font-medium text-red-800">Location permission denied</p>
+        <p class="mt-1 text-sm text-red-700">Re-enable it in your browser's site settings, then try again.</p>
+      </div>
+      <div class="card">
+        <h2 class="text-sm font-semibold">no-destination</h2>
+        {% include "components/alert.html" with variant="warning" title="Add a destination" body="Enter where you're headed, then choose Find route." %}
+      </div>
+      <div class="card">
+        <h2 class="text-sm font-semibold">loading</h2>
+        {% include "components/spinner.html" with label="Loading map…" %}
+      </div>
+      <div class="card">
+        <h2 class="text-sm font-semibold">stale-data — Sample crossing (demo)</h2>
+        <div class="mt-2 flex items-center gap-2">{% status_badge "stale" %} {% source_badge "community" %}</div>
+        <p class="mt-2 text-sm text-slate-600">Last report 3 h ago (demo)</p>
+      </div>
+      <div class="card">
+        <h2 class="text-sm font-semibold">API-unavailable</h2>
+        {% include "components/error_state.html" with title="Map unavailable" body="Google Maps couldn't be loaded." icon="cloud-off" retry_label="Try again" %}
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}

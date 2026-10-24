@@ -5,6 +5,7 @@
 __pycache__
 *.pyc
 staticfiles
+static/css/app.css
 media
 data/
 *.pbf

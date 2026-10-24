@@ -1,0 +1,6 @@
+{% load ui %}
+<span class="badge {{ badge.classes }}" title="{{ badge.description }}">
+  {% icon badge.icon class="size-3.5" %}
+  <span>{{ badge.label }}</span>
+  <span class="sr-only">— {{ badge.description }}</span>
+</span>

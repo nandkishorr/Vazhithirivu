@@ -1,0 +1,28 @@
+{% load ui %}
+{# Include with: variant=info|success|warning|error, title, body, icon (optional) #}
+<div class="rounded-lg border p-3 text-sm
+    {% if variant == 'success' %}border-green-200 bg-green-50 text-green-900
+    {% elif variant == 'warning' %}border-amber-200 bg-amber-50 text-amber-900
+    {% elif variant == 'error' %}border-red-200 bg-red-50 text-red-900
+    {% else %}border-sky-200 bg-sky-50 text-sky-900{% endif %}"
+  {% if variant == 'error' %}role="alert"{% else %}role="status"{% endif %}>
+  <div class="flex gap-2.5">
+    <span class="mt-0.5 shrink-0
+      {% if variant == 'success' %}text-green-700
+      {% elif variant == 'warning' %}text-amber-700
+      {% elif variant == 'error' %}text-red-700
+      {% else %}text-sky-700{% endif %}">
+      {% if icon %}
+        {% icon icon class="size-5" %}
+      {% elif variant == 'success' %}{% icon "circle-check" class="size-5" %}
+      {% elif variant == 'warning' %}{% icon "triangle-alert" class="size-5" %}
+      {% elif variant == 'error' %}{% icon "octagon-x" class="size-5" %}
+      {% else %}{% icon "info" class="size-5" %}{% endif %}
+    </span>
+    <div class="min-w-0">
+      {% if title %}<p class="font-semibold">{{ title }}</p>{% endif %}
+      {% if body %}<p class="mt-0.5">{{ body }}</p>{% endif %}
+      {{ extra }}
+    </div>
+  </div>
+</div>

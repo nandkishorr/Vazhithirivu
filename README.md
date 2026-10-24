@@ -72,6 +72,10 @@ repository-root/
 - Keep OSM reference data, community reports, real-user data, and simulator data separate.
 - Never commit secrets, `.env` files, or private location data.
 
+## Attribution
+
+Map imagery and attribution are rendered by Google Maps Platform. Railway data comes from OpenStreetMap (© OpenStreetMap contributors, ODbL). Icons are Lucide (ISC). See `DATA_SOURCES.md` for details and obligations.
+
 ## Scope note
 
 This bundle contains specifications and implementation prompts. It does **not** mean the application has already been implemented or tested. Devin must verify the repository and report actual test results.

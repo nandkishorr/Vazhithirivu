@@ -1,0 +1,5 @@
+{# Include with: label (optional) #}
+<span class="inline-flex items-center gap-2 text-sm text-slate-600">
+  <span class="size-4 animate-spin rounded-full border-2 border-slate-300 border-t-brand-600 motion-reduce:animate-none" aria-hidden="true"></span>
+  {% if label %}<span>{{ label }}</span>{% else %}<span class="sr-only">Loading</span>{% endif %}
+</span>

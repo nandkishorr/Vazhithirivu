@@ -73,6 +73,8 @@ class ProdSettingsTests(SimpleTestCase):
                 "DJANGO_SECRET_KEY": VALID_SECRET,
                 "DJANGO_ALLOWED_HOSTS": "example.com",
                 "DJANGO_SECURE_HSTS_SECONDS": "31536000",
+                "GOOGLE_MAPS_BROWSER_KEY": "test-browser-key",
+                "GOOGLE_MAPS_MAP_ID": "test-map-id",
             },
             extra_args=["--deploy"],
         )

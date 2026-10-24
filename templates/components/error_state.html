@@ -1,0 +1,11 @@
+{% load ui %}
+{# Include with: title, body, icon (optional), retry_label + retry_id (optional retry button) #}
+<div class="flex flex-col items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-8 text-center" role="alert">
+  <span class="text-red-400">{% if icon %}{% icon icon class="size-8" %}{% else %}{% icon "octagon-x" class="size-8" %}{% endif %}</span>
+  <p class="text-sm font-medium text-red-800">{{ title }}</p>
+  {% if body %}<p class="max-w-sm text-sm text-red-700">{{ body }}</p>{% endif %}
+  {% if retry_label %}
+    <button type="button"{% if retry_id %} id="{{ retry_id }}"{% endif %} class="btn-secondary mt-2">{{ retry_label }}</button>
+  {% endif %}
+  {{ extra }}
+</div>

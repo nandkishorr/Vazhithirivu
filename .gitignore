@@ -12,6 +12,7 @@ venv/
 
 # Collected static / media / data
 staticfiles/
+static/css/app.css
 media/
 data/
 *.osm.pbf

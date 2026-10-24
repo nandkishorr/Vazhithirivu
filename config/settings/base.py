@@ -12,6 +12,17 @@ env = environ.Env(
     DJANGO_LOG_LEVEL=(str, "INFO"),
     GOOGLE_MAPS_BROWSER_KEY=(str, ""),
     GOOGLE_MAPS_SERVER_KEY=(str, ""),
+    GOOGLE_MAPS_MAP_ID=(str, ""),
+    MAP_DEFAULT_LAT=(float, 9.9312),
+    MAP_DEFAULT_LNG=(float, 76.2673),
+    MAP_DEFAULT_ZOOM=(int, 13),
+    REPORT_FRESH_MINUTES=(int, 15),
+    REPORT_STALE_MINUTES=(int, 60),
+    REPORT_CONFLICT_WINDOW_MINUTES=(int, 5),
+    REPORT_DUPLICATE_WINDOW_MINUTES=(int, 2),
+    REPORT_MIN_FLIP_SECONDS=(int, 30),
+    REPORT_MAX_PER_HOUR=(int, 20),
+    REPORT_RETENTION_DAYS=(int, 30),
 )
 
 # .env is optional: real environment variables always take precedence.
@@ -34,6 +45,8 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django.contrib.gis",
     "core",
+    "railways",
+    "incidents",
 ]
 
 MIDDLEWARE = [
@@ -52,7 +65,7 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -89,6 +102,7 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_DIRS = [BASE_DIR / "static"]
 
 STORAGES = {
     "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
@@ -99,6 +113,25 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 GOOGLE_MAPS_BROWSER_KEY = env("GOOGLE_MAPS_BROWSER_KEY")
 GOOGLE_MAPS_SERVER_KEY = env("GOOGLE_MAPS_SERVER_KEY")
+
+GOOGLE_MAPS_MAP_ID = env("GOOGLE_MAPS_MAP_ID")
+
+MAP_DEFAULT_LAT = env.float("MAP_DEFAULT_LAT")
+MAP_DEFAULT_LNG = env.float("MAP_DEFAULT_LNG")
+MAP_DEFAULT_ZOOM = env.int("MAP_DEFAULT_ZOOM")
+
+LOGIN_URL = "login"
+LOGIN_REDIRECT_URL = "home"
+LOGOUT_REDIRECT_URL = "home"
+
+# Community crossing-report policy (incidents app; see ADR-011).
+REPORT_FRESH_MINUTES = env.int("REPORT_FRESH_MINUTES")
+REPORT_STALE_MINUTES = env.int("REPORT_STALE_MINUTES")
+REPORT_CONFLICT_WINDOW_MINUTES = env.int("REPORT_CONFLICT_WINDOW_MINUTES")
+REPORT_DUPLICATE_WINDOW_MINUTES = env.int("REPORT_DUPLICATE_WINDOW_MINUTES")
+REPORT_MIN_FLIP_SECONDS = env.int("REPORT_MIN_FLIP_SECONDS")
+REPORT_MAX_PER_HOUR = env.int("REPORT_MAX_PER_HOUR")
+REPORT_RETENTION_DAYS = env.int("REPORT_RETENTION_DAYS")
 
 LOGGING = {
     "version": 1,

@@ -27,6 +27,10 @@ Vazhithirivu (വഴിത്തിരിവ്): railway-crossing intelligence 
 - Respect third-party API quotas, terms, attribution and data licensing.
 - Avoid unnecessary infrastructure. Redis is for actual caching/broker/channel needs, not a synonym for load balancing.
 
+## Owner preferences
+- Testing cadence: implement the whole session's scope first, then run one consolidated verification pass at the end (build, test suite, check, smoke). Skip intermediate test runs and screenshots unless asked.
+- Map provider: Google Maps Platform (Maps JavaScript API + Places API (New)); keys are configured later via `.env` (see `.env.example`).
+
 ## End-of-session handoff
 Update `PROJECT_STATE.md` every session. Include:
 - Current milestone and implementation status.

@@ -44,5 +44,39 @@ services:
       retries: 12
       start_period: 15s
 
+  # One-shot OSM importer. Run explicitly, never wired into web startup:
+  #   docker compose --profile import run --rm osm-import \
+  #     --source /data/osm/southern-zone-latest.osm.pbf --bbox 76.18,9.85,76.45,10.15
+  osm-import:
+    profiles: ["import"]
+    build:
+      context: .
+      args:
+        REQUIREMENTS: requirements/dev.txt
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.dev}
+      DATABASE_URL: postgis://${POSTGRES_USER:-vazhithirivu}:${POSTGRES_PASSWORD:-vazhithirivu}@db:5432/${POSTGRES_DB:-vazhithirivu}
+    entrypoint: ["python", "manage.py", "import_osm_railways"]
+    volumes:
+      - .:/app
+      - ./data/osm:/data/osm:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Dev-only Tailwind watcher; recompiles static/css/app.css on file changes.
+  # The web app does not depend on it (it serves whatever CSS exists).
+  tailwind:
+    build:
+      context: .
+      target: tailwind
+    working_dir: /src
+    volumes:
+      - .:/src
+    command: tailwindcss -i assets/tailwind/input.css -o static/css/app.css --watch=always
+
 volumes:
   pgdata:

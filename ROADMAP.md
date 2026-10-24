@@ -11,13 +11,13 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 ## M1 — Local map and crossing catalogue — IN PROGRESS
 - [x] Docker Compose: Django + PostgreSQL/PostGIS. All services are containerised (ADR-006), and the DB port is not published. Redis is deferred (ADR-007). Evidence: Session 01, 10 tests OK, `/readyz/` 200 with PostGIS 3.5.2.
 - [x] Env-driven settings (dev/test/prod), `.env.example`, `.gitignore`, health endpoints.
-- [ ] Tailwind build integrated with Django and Docker.
-- [ ] Leaflet or Google Maps JavaScript API map page.
-- [ ] Crossing/track models and small test fixture.
-- [ ] Idempotent OSM import command.
+- [x] Tailwind build integrated with Django and Docker. Evidence: Session 02, Tailwind 4.3.3 standalone CLI stage, `app.css` present in prod image (ADR-008).
+- [~] Google Maps JavaScript API map page + Place Autocomplete (ADR-009). Implemented and unit-tested; not yet exercised in a browser with real keys.
+- [x] Crossing/track models and small test fixture. Evidence: Session 03, `railways` app, synthetic `sample_v1/v2.osm` fixtures (ADR-010).
+- [x] Idempotent OSM import command. Evidence: Session 03, `import_osm_railways` (pyosmium 4.3.2), 46 tests OK; not yet run against a real Geofabrik extract.
 - [ ] Nearby crossing query using PostGIS.
 - [ ] Map markers sourced from the local database.
-- [ ] Attribution and source metadata visible/documented.
+- [~] Attribution and source metadata visible/documented. Documented in DATA_SOURCES/RUNBOOK; UI attribution ("© OpenStreetMap contributors") still to add when crossings are rendered.
 
 ## M2 — Route planning and crossing association
 - [ ] Provider-independent routing interface.
@@ -28,9 +28,9 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 - [ ] Tests with mocked providers and fixed geometries.
 
 ## M3 — Incident intelligence
-- [ ] Timestamped community reports.
-- [ ] Expiry, duplicate handling and conflicting-report logic.
-- [ ] Status freshness and confidence display.
+- [x] Timestamped community reports.
+- [x] Expiry, duplicate handling and conflicting-report logic.
+- [~] Status freshness and confidence display (done on crossing detail page + JSON API; no map markers yet).
 - [ ] Route-aware incident evaluation.
 - [ ] Reroute prompt with accept/reject actions.
 
@@ -51,8 +51,8 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 - [ ] Start/pause/stop/reset tests proving real data remains untouched.
 
 ## M6 — Product polish
-- [ ] Responsive Tailwind UI, desktop panel and mobile bottom sheet.
-- [ ] Loading/error/empty/stale states and toasts.
+- [~] Responsive Tailwind UI, desktop panel and mobile bottom sheet (shell built Session 02; not visually verified on devices).
+- [~] Loading/error/empty/stale states (built Session 02, see `/ui/` in DEBUG); toasts pending.
 - [ ] Accessible controls and reduced-motion support.
 - [ ] API quota and provider-failure handling.
 - [ ] Documentation, runbook and demo script.
