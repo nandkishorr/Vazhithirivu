@@ -56,14 +56,47 @@
     if (locErrorBody) locErrorBody.textContent = message;
   }
 
+  // gmpx-place-picker keeps its text box in an open shadow root; reading
+  // is guarded so a Google internals change degrades to "".
+  function pickerInput(picker) {
+    try {
+      return (
+        picker &&
+        picker.shadowRoot &&
+        picker.shadowRoot.querySelector("input")
+      );
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function currentFromText() {
+    const picker = document.getElementById("origin-picker");
+    const el = pickerInput(picker);
+    if (el) return el.value;
+    const input = document.getElementById("id_origin");
+    return input ? input.value : "";
+  }
+
   function setFromField(value) {
     const input = document.getElementById("id_origin");
     if (input) input.value = value;
-    const autocomplete =
-      input && input.parentElement
-        ? input.parentElement.querySelector("gmp-place-autocomplete")
-        : null;
-    if (autocomplete) autocomplete.value = value;
+    const el = pickerInput(document.getElementById("origin-picker"));
+    if (el) el.value = value;
+  }
+
+  // "My location" coords travel to the server only as form fields when the
+  // user explicitly submits Find route (opt-in); they are never stored.
+  function setOriginCoords(lat, lng) {
+    const latEl = document.getElementById("id_origin_lat");
+    const lngEl = document.getElementById("id_origin_lng");
+    if (latEl) latEl.value = lat === null ? "" : String(lat);
+    if (lngEl) lngEl.value = lng === null ? "" : String(lng);
+  }
+
+  function clearOriginPlaceId() {
+    const placeId = document.getElementById("id_origin_place_id");
+    if (placeId) placeId.value = "";
   }
 
   function clearLocVisuals() {
@@ -137,6 +170,8 @@
     }
 
     setFromField("My location");
+    setOriginCoords(lat, lng);
+    clearOriginPlaceId();
     showLocState("active");
   }
 
@@ -199,19 +234,18 @@
       locToken += 1;
       locInFlight = false;
       clearLocVisuals();
-      const input = document.getElementById("id_origin");
-      const autocomplete =
-        input && input.parentElement
-          ? input.parentElement.querySelector("gmp-place-autocomplete")
-          : null;
-      const current =
-        autocomplete && autocomplete.value
-          ? autocomplete.value
-          : input
-            ? input.value
-            : "";
-      if (current === "My location") setFromField("");
+      if (currentFromText() === "My location") setFromField("");
+      setOriginCoords(null, null);
       showLocState("idle");
+    });
+  }
+
+  // If the user edits From to something other than "My location", drop the
+  // coords so the server never sees them alongside a typed place.
+  const routeForm = document.getElementById("route-form");
+  if (routeForm) {
+    routeForm.addEventListener("submit", () => {
+      if (currentFromText() !== "My location") setOriginCoords(null, null);
     });
   }
 })();

@@ -142,8 +142,23 @@ tracks 496 kB. A full southern-zone or India import (no bbox) is not yet measure
 - Not implemented yet (Session 08). Start only via an optional Compose profile; reset only simulation-scoped records.
 
 ## Google Maps
-- The map needs `GOOGLE_MAPS_BROWSER_KEY` (Maps JavaScript API + Places API (New); restrict by HTTP referrer and those APIs) and `GOOGLE_MAPS_MAP_ID` (Maps Management / Map Styles in Cloud Console; needed for cloud styling and AdvancedMarkerElement pins). `GOOGLE_MAPS_SERVER_KEY` is reserved for future server-side use — never expose it to the browser.
+- The map needs `GOOGLE_MAPS_BROWSER_KEY` (Maps JavaScript API + Places API (New); restrict by HTTP referrer and those APIs) and `GOOGLE_MAPS_MAP_ID` (Maps Management / Map Styles in Cloud Console; needed for cloud styling and AdvancedMarkerElement pins). `GOOGLE_MAPS_SERVER_KEY` powers route planning via the Routes API — never expose it to the browser.
 - Blank values are OK: the app boots, `core.W001`/`core.W002` warnings are emitted, and the map region shows a not-configured (DEBUG) or generic unavailable state.
+
+### Routes API server key (route planning)
+1. In Google Cloud Console, enable the **Routes API** for the project.
+2. Create/use `GOOGLE_MAPS_SERVER_KEY`: restrict it to the Routes API only; use **no referrer restriction** (server-to-server calls have no referrer); add an IP restriction in production.
+3. Set it in `.env`, then `docker compose up -d --force-recreate web` so the container picks it up.
+- Config knobs (`.env.example`): `ROUTING_PROVIDER`, `ROUTING_TIMEOUT_SECONDS` (8), `ROUTING_GOOGLE_ROUTING_PREFERENCE` (`TRAFFIC_UNAWARE` default = Essentials SKU; `TRAFFIC_AWARE` = Pro SKU), `ROUTING_MAX_REQUESTS_PER_HOUR` (60 per client per clock hour), and thresholds `ROUTE_CROSSING_ON_ROUTE_M` (20), `ROUTE_CROSSING_NEAR_M` (50), `ROUTE_TRACK_MATCH_M` (30), `ROUTE_AVOID_CLEARANCE_M` (100). Invalid values fail `manage.py check` (`routing.E001/E002`); a blank key is `routing.W001`.
+- Fallback behaviour: `not_configured` (no key — DEBUG shows the fix), `no_route`, `quota`/`rate_limited` ("busy, try later"), `auth` (key/Routes API problem), `timeout`/`provider_error` (provider unreachable), `invalid_request` (pick a suggested place). No durations are shown on errors.
+- Route planning requires the browser key too: Google route content is only shown on a Google map, so the provider is never called when `GOOGLE_MAPS_BROWSER_KEY` is blank.
+
+#### Routing smoke checklist (live keys)
+- [ ] `/?origin=Edappally%2C+Kochi&destination=Vyttila%2C+Kochi` renders a route panel with km/min, "Google estimate, without live traffic", "Planned at HH:MM", and "Routes by Google".
+- [ ] The map draws the route polyline; the panel lists mapped crossings with status badges and "On route"/"Possibly on route".
+- [ ] Report a crossing on the route "closed" (signed-in), refresh: warning appears; if Google returns an alternative it is verified by geometry or explicitly shown as not verified.
+- [ ] "Use this route" switches the panel + polyline only after the click; "Back to original route" restores it.
+- [ ] With the browser key unset, the route form still works but no provider call happens ("Route planning needs the map").
 
 ### Manual smoke test with real Google keys
 Configure `GOOGLE_MAPS_BROWSER_KEY` + `GOOGLE_MAPS_MAP_ID` in `.env` (browser key restricted by HTTP referrer to `localhost:8000/*` and to Maps JavaScript API + Places API (New)), then `docker compose up -d` and check:

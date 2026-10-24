@@ -65,14 +65,28 @@ class HomeTests(TestCase):
         self.assertEqual(config["mapId"], "test-map-id")
         self.assertEqual(config["center"], [9.9312, 76.2673])
         self.assertEqual(config["zoom"], 13)
+        self.assertContains(response, 'gmpx-place-picker id="origin-picker"')
+        self.assertContains(response, 'gmpx-place-picker id="destination-picker"')
+        self.assertContains(response, "extended-component-library")
+        self.assertContains(response, 'type="hidden" name="origin"')
+        self.assertContains(response, 'type="hidden" name="destination"')
+
+    @override_settings(GOOGLE_MAPS_BROWSER_KEY="")
+    def test_without_key_renders_plain_inputs(self):
+        response = Client().get("/")
+        self.assertNotContains(response, "gmpx-place-picker")
+        self.assertContains(response, 'name="origin"')
+        self.assertContains(response, 'name="destination"')
 
     def test_blank_destination_warns(self):
         response = Client().get("/?destination=")
         self.assertContains(response, "Add a destination")
 
     def test_destination_echoes_escaped(self):
+        # No origin and no browser key: the destination is echoed escaped
+        # and the missing-origin hint is shown (no provider call happens).
         response = Client().get("/?destination=Ernakulam")
-        self.assertContains(response, "Route planning isn't available yet")
+        self.assertContains(response, "Add a starting point")
         self.assertContains(response, "Ernakulam")
 
     def test_destination_xss_escaped(self):

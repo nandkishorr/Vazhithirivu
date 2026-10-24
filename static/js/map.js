@@ -28,49 +28,73 @@
 
   window.vz = { map: null, AdvancedMarkerElement: null, userMarker: null };
 
-  function setupAutocomplete(PlaceAutocompleteElement) {
-    [
-      ["id_origin", "origin", "origin_place_id"],
-      ["id_destination", "destination", "destination_place_id"],
-    ].forEach(([inputId, fieldName, hiddenName]) => {
+  // The picker's internal text input lives in its (open) shadow root.
+  // Guarded: if Google changes internals this degrades to "".
+  function pickerText(picker) {
+    try {
+      const el =
+        picker.shadowRoot && picker.shadowRoot.querySelector("input");
+      return el ? el.value : "";
+    } catch (err) {
+      return "";
+    }
+  }
+
+  function setupPlacePickers(map) {
+    const fields = [
+      ["origin-picker", "id_origin", "id_origin_place_id", true],
+      ["destination-picker", "id_destination", "id_destination_place_id", false],
+    ];
+    fields.forEach(([pickerId, inputId, hiddenId, isOrigin]) => {
+      const picker = document.getElementById(pickerId);
       const input = document.getElementById(inputId);
-      if (!input) return;
-      const el = new PlaceAutocompleteElement({
-        includedRegionCodes: ["in"],
-        locationBias: {
-          radius: 50000,
-          center: { lat: cfg.center[0], lng: cfg.center[1] },
-        },
-      });
-      el.setAttribute("placeholder", input.getAttribute("placeholder") || "");
-      const label = document.querySelector('label[for="' + inputId + '"]');
-      if (label) el.setAttribute("aria-label", label.textContent.trim());
-      el.className = "block w-full";
+      const hidden = document.getElementById(hiddenId);
+      if (!picker || !input || !hidden) return;
+      if (map && picker.bindTo) picker.bindTo(map);
 
-      const hidden = document.createElement("input");
-      hidden.type = "hidden";
-      hidden.name = hiddenName;
-      hidden.id = "id_" + hiddenName;
-
-      input.classList.add("hidden");
-      input.setAttribute("aria-hidden", "true");
-      input.tabIndex = -1;
-      input.parentElement.appendChild(el);
-      input.parentElement.appendChild(hidden);
-
-      el.addEventListener("gmp-select", async (event) => {
-        const place = event.placePrediction.toPlace();
-        await place.fetchFields({
-          fields: ["id", "displayName", "formattedAddress", "location"],
-        });
-        const name =
-          typeof place.displayName === "string"
-            ? place.displayName
-            : (place.displayName && place.displayName.text) || "";
-        input.value = place.formattedAddress || name;
-        hidden.value = place.id || "";
+      picker.addEventListener("gmpx-placechange", () => {
+        const place = picker.value;
+        if (place && place.id) {
+          const name =
+            typeof place.displayName === "string"
+              ? place.displayName
+              : (place.displayName && place.displayName.text) || "";
+          input.value = place.formattedAddress || name;
+          hidden.value = place.id;
+          // Picking a real place for From supersedes a "My location" fix.
+          if (isOrigin) {
+            const latEl = document.getElementById("id_origin_lat");
+            const lngEl = document.getElementById("id_origin_lng");
+            if (latEl) latEl.value = "";
+            if (lngEl) lngEl.value = "";
+          }
+        } else {
+          // Input cleared or no matching place: drop stale form values.
+          input.value = "";
+          hidden.value = "";
+        }
       });
     });
+
+    // gmpx-place-picker has no form name and typed-but-unselected text is
+    // not a Place, so it would submit as empty. Sync the visible text on
+    // submit; if it was edited after a pick, drop the stale place id.
+    const form = document.getElementById("route-form");
+    if (form) {
+      form.addEventListener("submit", () => {
+        fields.forEach(([pickerId, inputId, hiddenId]) => {
+          const picker = document.getElementById(pickerId);
+          const input = document.getElementById(inputId);
+          const hidden = document.getElementById(hiddenId);
+          if (!picker || !input || !hidden) return;
+          const text = pickerText(picker);
+          if (text !== input.value) {
+            input.value = text;
+            hidden.value = "";
+          }
+        });
+      });
+    }
   }
 
   // --- Crossing markers ------------------------------------------------------
@@ -595,11 +619,181 @@
     });
   }
 
+
+  // --- Route display -------------------------------------------------------
+  // Route geometry comes from #route-data (server-rendered). Only the
+  // selected route is emphasised; switching is always user-confirmed.
+  function setupRoutes(map, markerLib) {
+    const dataEl = document.getElementById("route-data");
+    const announceEl = document.getElementById("route-announce");
+    if (!dataEl) return;
+    let data;
+    try {
+      data = JSON.parse(dataEl.textContent);
+    } catch (err) {
+      return;
+    }
+    if (!data || !Array.isArray(data.routes) || data.routes.length === 0) return;
+
+    const blockingNames = (data.blocking || []).join(", ");
+    const selectedColor = "#1d4ed8"; // brand
+    const altColor = "#64748b"; // slate — never green for "avoids"
+
+    const polylines = new Map();
+    const selectedIdRef = { id: "r0" };
+
+    function lineBounds(coords) {
+      const bounds = new google.maps.LatLngBounds();
+      coords.forEach(([lat, lng]) => bounds.extend({ lat: lat, lng: lng }));
+      return bounds;
+    }
+
+    function styleFor(id, selected) {
+      if (selected) {
+        return { strokeColor: selectedColor, strokeOpacity: 0.9, strokeWeight: 6, icons: undefined, zIndex: 100 };
+      }
+      return {
+        strokeColor: altColor, strokeOpacity: 0, strokeWeight: 4,
+        icons: [{
+          icon: { path: "M 0,-1 0,1", strokeOpacity: 0.9, strokeWeight: 4, strokeColor: altColor, scale: 3 },
+          offset: "0", repeat: "14px",
+        }],
+        zIndex: 10,
+      };
+    }
+
+    data.routes.forEach((route) => {
+      if (!route.coords || route.coords.length < 2) return;
+      const path = route.coords.map(([lat, lng]) => ({ lat: lat, lng: lng }));
+      const line = new google.maps.Polyline(
+        Object.assign(
+          {
+            map: map,
+            path: path,
+            clickable: true,
+          },
+          styleFor(route.id, route.id === selectedIdRef.id)
+        )
+      );
+      line.addListener("click", () => {
+        if (route.id !== selectedIdRef.id) selectRoute(route.id, true);
+      });
+      polylines.set(route.id, { line: line, path: path, route: route });
+    });
+
+    // Markers for closed/conflicting crossings on the displayed routes.
+    const useAdvanced = window.vz.hasMapId && markerLib.AdvancedMarkerElement;
+    const seen = new Set();
+    data.routes.forEach((route) => {
+      (route.crossings || []).forEach((c) => {
+        if (seen.has(c.id)) return;
+        seen.add(c.id);
+        if (c.state !== "closed_reported" && c.state !== "conflicting") return;
+        const style = STATE_STYLE[c.state] || STATE_STYLE.unknown;
+        const position = { lat: Number(c.lat), lng: Number(c.lng) };
+        const title =
+          (c.name || "Level crossing") +
+          " \u2014 " +
+          (c.state === "closed_reported" ? "Reported closed" : "Conflicting reports") +
+          " (community reports, not official)";
+        if (useAdvanced) {
+          const pin = new markerLib.PinElement({
+            background: style.color,
+            borderColor: style.border,
+            glyphColor: "#fff",
+            glyph: style.glyph,
+            scale: 0.8,
+          });
+          new markerLib.AdvancedMarkerElement({
+            map: map,
+            position: position,
+            title: title,
+            content: pin.element,
+          });
+        } else {
+          new google.maps.Marker({
+            map: map,
+            position: position,
+            title: title,
+            icon: {
+              path: google.maps.SymbolPath.CIRCLE,
+              scale: LEGACY_ICON_SCALE * 0.8,
+              fillColor: style.color,
+              fillOpacity: 1,
+              strokeColor: "#fff",
+              strokeWeight: 2,
+            },
+            label: { text: style.glyph, color: "#fff", fontSize: "10px" },
+          });
+        }
+      });
+    });
+
+    function fitTo(id) {
+      const entry = polylines.get(id);
+      if (!entry) return;
+      map.fitBounds(lineBounds(entry.route.coords), 60);
+    }
+
+    function showPanel(id) {
+      document.querySelectorAll("[data-route-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.routePanel !== id;
+      });
+    }
+
+    function selectRoute(id, fromMapClick) {
+      if (!polylines.has(id)) return;
+      const prev = selectedIdRef.id;
+      selectedIdRef.id = id;
+      polylines.forEach((entry, routeId) => {
+        entry.line.setOptions(styleFor(routeId, routeId === id));
+      });
+      document.querySelectorAll("[data-route-option]").forEach((btn) => {
+        const selected = btn.dataset.routeOption === id;
+        btn.setAttribute("aria-pressed", selected ? "true" : "false");
+        if (selected) {
+          btn.setAttribute("data-selected", "");
+        } else {
+          btn.removeAttribute("data-selected");
+        }
+      });
+      showPanel(id);
+      fitTo(id);
+      if (announceEl) {
+        const route = data.routes.find((r) => r.id === id);
+        if (id === "r0" && prev !== "r0") {
+          announceEl.textContent = "Back to the original route.";
+        } else if (route && route.verification === "verified") {
+          announceEl.textContent =
+            "Switched to the alternative route. It avoids " +
+            blockingNames +
+            " (checked against route geometry).";
+        } else if (route && route.verification === "passes") {
+          announceEl.textContent =
+            "Showing a route that also passes a reported-closed crossing.";
+        } else if (blockingNames) {
+          announceEl.textContent =
+            "Showing an alternative that is not verified to avoid " +
+            blockingNames +
+            ".";
+        } else {
+          announceEl.textContent = "Switched route.";
+        }
+      }
+    }
+
+    document.querySelectorAll("[data-route-select]").forEach((btn) => {
+      btn.addEventListener("click", () => selectRoute(btn.dataset.routeSelect, false));
+    });
+
+    fitTo(selectedIdRef.id);
+  }
+
   async function init() {
     try {
       const { Map, Circle } = await google.maps.importLibrary("maps");
       const markerLib = await google.maps.importLibrary("marker");
-      const { PlaceAutocompleteElement } = await google.maps.importLibrary("places");
+      // Places is loaded lazily by the gmpx-place-picker components.
 
       const map = new Map(document.getElementById("map"), {
         center: { lat: cfg.center[0], lng: cfg.center[1] },
@@ -622,11 +816,20 @@
       window.vz.hasMapId = Boolean(cfg.mapId);
       window.vz.Circle = Circle;
       window.vz.crossingsMinZoom = cfg.crossingsMinZoom;
-      setupAutocomplete(PlaceAutocompleteElement);
+      try {
+        setupPlacePickers(map);
+      } catch (err) {
+        console.warn("Place pickers failed to initialise:", err);
+      }
       try {
         setupCrossingMarkers(map, markerLib);
       } catch (err) {
         console.warn("Crossing markers failed to initialise:", err);
+      }
+      try {
+        setupRoutes(map, markerLib);
+      } catch (err) {
+        console.warn("Route display failed to initialise:", err);
       }
     } catch (err) {
       showApiError();

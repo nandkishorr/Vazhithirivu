@@ -3,8 +3,8 @@
 > This file is the handoff point between agent sessions. Update it at the end of every meaningful work session.
 
 ## Status
-- Current milestone: **Session 05 (map integration + geolocation) implemented, uncommitted, 2026-10-25.** It sits on `25dc8ea` (`main`, not pushed). M1 is nearly done; M4 has its browser-only first steps. Next: real-browser check with keys, then crossing labels or Session 06 (routing).
-- Git: `main` = `25dc8ea` plus the uncommitted Session 05 changes (112 tests OK). Branch `wip/crossing-labels` (`7693266`, pushed) holds **incomplete, untested** work on road/place-derived crossing labels. Don't merge it as is.
+- Current milestone: **Session 06 (routing + verified crossing avoidance) committed as `f69dcc3`, 2026-10-25.** M2 essentially done; real-browser check in progress (routes + pickers confirmed working by owner). Next: finish browser smoke, crossing labels.
+- Git: `main` = `f69dcc3`, tree clean, not pushed. Branch `wip/crossing-labels` (`7693266`, pushed) holds **incomplete, untested** work on road/place-derived crossing labels. Don't merge it as is.
 - Product: Vazhithirivu (വഴിത്തിരിവ്), "Smart routes. Smarter crossings."
 - Target demo: Kochi, Kerala; future dataset target: India-wide mapped railway crossings.
 - Stack: Django 5.2 LTS, server-rendered templates, Tailwind CSS v4 (standalone CLI, ADR-008), Google Maps JavaScript API + Places API (New) (ADR-009), PostgreSQL 17 + PostGIS 3.5, Docker Compose. Not yet added: HTMX/Alpine (not needed yet), Redis/Channels/Celery (Session 07+).
@@ -92,6 +92,37 @@ Session 05 (uncommitted; ADR-012):
   - location markup test in `test_ui.py`.
 - Docs: ADR-012, RUNBOOK (endpoint + **manual smoke-test checklist with real Google keys** under "Google Maps"), ROADMAP (M1 bbox ticked, M4 explicit-permission/stop ticked as browser-only), `.env.example`.
 
+Session 06 (uncommitted; ADR-013):
+- **`routing` app** (in `INSTALLED_APPS` after `incidents`; **no models** — Google ToS bar persisting route content). `providers.py`: `Waypoint`, `RouteCandidate`, `RoutingError` (codes not_configured/no_route/quota/auth/timeout/invalid_request/provider_error; key never in error text), `GoogleRoutesProvider` (Routes API `computeRoutes` via stdlib urllib; `computeAlternativeRoutes` + `HIGH_QUALITY` polyline in one call; `routingPreference` only sent when TRAFFIC_AWARE; DEFAULT_ROUTE sorted to index 0), `get_provider`. `polyline.py` decode/`to_linestring`. `analysis.py` raw PostGIS SQL: `crossings_along_route` (GiST prefilter + `ST_DWithin` geography 50 m, `along_m` via `ST_LineLocatePoint`, `on_route` needs ≤20 m **and** a mapped-track intersection within 30 m — parallel roads come out `possible`), `distances_to_crossings`. `throttle.py` per-client/hour cap via Django cache (locmem, per-process). `services.py` `plan_route` → `RoutePlan`: one provider call, one bulk `derive_statuses`, warning levels `closed_on_route`/`closed_near_route`/`conflicting_on_route` (unknown/stale never warn); alternatives evaluated only when blocking; `verified` requires >100 m clearance from every blocking crossing and no closed crossing of its own; `passes`/`uncertain`/`unverifiable` rendered honestly (missing distance fails closed to `unverifiable`). `checks.py` `routing.E001/E002/W001`.
+- `core.views.home`: new route states `missing_origin`/`planned`; place-id regex + 300-char caps; `route-data` `json_script` for the map. `templates/routing/_route_plan.html`: per-route panels, crossing list ordered along the route with badges + "On route"/"Possibly on route", warning/alternative blocks ("Use this route" only on verified; "Show on map (not verified)" on uncertain; passes → text only), disclaimers + "Routes by Google", `#route-announce` aria-live. `static/js/map.js` `setupRoutes`: polylines (selected brand/solid, alternates slate/dashed — never green for avoids), closed/conflicting route-crossing markers, user-confirmed `data-route-select` switching + fitBounds + announcements.
+- Settings: `ROUTING_*`/`ROUTE_*` knobs (timeout 8 s, 60 req/hr/client, 20/50/30/100 m thresholds, `ROUTING_GOOGLE_ROUTING_PREFERENCE=TRAFFIC_UNAWARE` — Essentials SKU; TRAFFIC_AWARE bills Pro). `config/settings/test.py` forces `GOOGLE_MAPS_SERVER_KEY=""` so tests can't reach Google. `.env`/`.env.example` now carry a working server key (Routes API enabled).
+- `incidents/services.py`: `CrossingStatus.age` property ("12 min ago").
+- Docs: ADR-013 (+ADR-004 marked implemented), DATA_SOURCES (Routes API usage/SKUs/no-storage), RUNBOOK (server-key setup + routing smoke checklist), ROADMAP M2 ticked.
+
+## Commands/tests run (Session 06, actual outcomes — single end-of-session pass + lead review fixes)
+| Command | Result |
+|---|---|
+| `node --check static/js/map.js static/js/app.js` | OK |
+| `docker compose run --rm web python manage.py makemigrations --check --dry-run` | No changes detected |
+| `docker compose run --rm web python manage.py check` | No issues (server key present → no routing.W001; W001 correctly fires when blank, seen in test output) |
+| `docker compose run --rm web python manage.py test --settings=config.settings.test` | **Ran 171 tests, OK** (165 after review fixes + 6 my-location tests) |
+| Live: `/?origin=My+location&origin_lat=10.0261&origin_lng=76.3125&destination=Edachira` | 2 routes rendered (r0 8.4 km/24 min via Infopark Rd, r1 9.6 km/26 min), route-data polylines present |
+| `docker compose run --rm tailwind tailwindcss -i assets/tailwind/input.css -o static/css/app.css --minify` | Done |
+| Live: `GET /?origin=Edappally,+Kochi&destination=Vyttila,+Kochi` (real key) | r0 "about 16 min via Panvel-Kochi-Kanyakumari Hwy", 214 pts, no alternatives, no mapped crossings (HTML: `/tmp/vz_s06_basic.html`) |
+| Live: lat,lng raw addresses | Google 400 → honest "Pick a place from the suggestions" (`/tmp/vz_s06_crossing.html`) |
+| Live: `Vaduthala→Pachalam` with a temp closed report on crossing 42 | `closed_near_route` warning naming the crossing "near the route at 1.3 km, reported just now"; 4 crossings matched `possible` (route is parallel to the track — PostGIS check confirmed the route crosses a track only once, ~295–643 m from the nodes, so `possible` is correct, not a bug). No alternative returned → honest fallback. Temp user/report deleted (0 left) |
+
+Lead review fixes after the sidekick pass: **fail-open bug** — a blocking crossing missing from `distances_to_crossings` was treated as infinitely far → `verified`; now `unverifiable` + new test. Template: removed per-entry duplicate empty alerts and the `mt-3 mt-3` artifact; near-route warning now names the crossing + report age; "other routes also pass" line deduplicated via `RoutePlan.passing_alternatives`.
+
+Owner bug report (fixed same session): "Use my location" only wrote the text "My location" into From — coords were never sent, so Google geocoded the literal string. Fix (opt-in, ADR-005): `app.js` stores coords in hidden `origin_lat`/`origin_lng` fields on fix, clears them on Stop/typed-origin/autocomplete select; the form sends them only on explicit Find-route submit; `Waypoint(lat,lng)` → Routes API `location.latLng`; fields re-populate from GET so Refresh works. Also fixed: place autocomplete showed blank From/To after reload (`el.value` now seeded). Live-verified: `My location (10.0261,76.3125) → Edachira` returned two routes (8.4 km/24 min via Infopark Rd + 9.6 km/26 min alt), 615/625-pt polylines (`/tmp/vz_s06_myloc.html`).
+
+Not verified: any of it in a real browser (polylines, panel switching, announcements); the `verified`-alternative path never occurred live (Google returned no alternatives in these calls — covered by mocked tests).
+
+Post-review follow-ups (same session, owner-reported):
+- **Place pickers → Google web components**: From/To now use `<gmpx-place-picker>` (Extended Component Library 0.6.15, Apache-2.0, pinned CDN script in `home.html`, rendered only when `map_config`; plain inputs remain the no-key fallback). Hidden `origin`/`destination`/`*_place_id` inputs carry the form data; `gmpx-placechange` syncs them; typed-but-unselected text is synced on submit via the picker's shadow input (guarded). "My location" writes text into the picker input + hidden coords.
+- **Route alternatives are selectable**: `Route options` button list renders whenever ≥2 routes come back (was only when a crossing blocked) — `data-route-select` switching, `aria-pressed` + `data-selected` styling, per-route delta vs primary (`delta_*` now always computed). Panels show a "From … to …" line since picker text can't be restored after reload.
+- Live: `My location → Edachira` renders Route 1 (8.4 km/24 min, Recommended) + Route 2 (9.6 km/26 min) with switch buttons (`/tmp/vz_s06_myloc2.html`). 173 tests OK.
+
 ## Commands/tests run (Session 05, actual outcomes — single end-of-session pass)
 | Command | Result |
 |---|---|
@@ -166,23 +197,26 @@ Re-run after review fix, with a keyless `.env` copied from `.env.example` (git-i
 Not run: browser rendering with real Google keys (none configured), device/visual screenshots (skipped per owner).
 
 ## Known risks / open questions
-- Google Maps path is not verified by an agent in a real browser. `.env` now holds a real browser key (Map ID presence unverified). Check autocomplete `gmp-select`, Map ID styling, AdvancedMarker, crossing-marker click (it listens to both `gmp-click` and `click`, so the panel may fill twice; harmless), `gm_authFailure`, and that the bottom sheet doesn't cover Google's logo/terms on mobile.
+- Google Maps path is not verified by an agent in a real browser. `.env` now holds a real browser key, Map ID, and a working server key (Routes API live-verified). Check autocomplete `gmp-select`, Map ID styling, AdvancedMarker, crossing-marker click (it listens to both `gmp-click` and `click`, so the panel may fill twice; harmless), route polyline drawing/switching/`fitBounds`, `gm_authFailure`, and that the bottom sheet doesn't cover Google's logo/terms on mobile.
+- Routing: the `verified`-alternative path is unit-tested but never observed live (Google returned no alternatives on the two Kochi pairs tried). The 20 m `on_route` threshold + 30 m track-intersection evidence kept a parallel-road route at `possible` (verified in PostGIS) — real `on_route` matches still need a route that truly crosses a track.
+- Throttle is per-process locmem cache — a multi-worker deploy needs a shared cache to enforce `ROUTING_MAX_REQUESTS_PER_HOUR`.
+- `REMOTE_ADDR` is the throttle key; behind a proxy, set `X-Forwarded-For` handling before trusting it.
 - Real OSM data lives only in the local dev DB volume (`pgdata`). Another machine must download and import it again (RUNBOOK "OSM import"). `data/osm/*.pbf` is git-ignored.
 - Template tests only grep HTML; they can't catch JS syntax errors (the loader bug above slipped past them). Consider a `node --check` step or a browser smoke test in CI.
 - Google terms: Places/Maps content caching/storage limits; Google route alternatives can't guarantee crossing avoidance (ADR-004).
 - PostGIS runs under amd64 emulation on Apple Silicon (slow). `libgdal-dev` makes the image large.
 - MIT code license vs ODbL obligations for distributed OSM-derived data still to review.
-- Routing engine with segment exclusion not chosen (Session 06).
+- No routing engine with true segment exclusion yet (ADR-013 chose Google + geometry verification). Valhalla `exclude_locations`/GraphHopper are documented future options.
 - Importer tested on the real Kochi bbox only. Memory with `flex_mem` and run time on the full southern-zone or India extract are unknown (for India use `--location-index dense_file_array,...`).
 - Reconcile leaves tracks that cross the bbox boundary alone (`__within`), so stale boundary tracks can stay active after a regional refresh.
 - OSM attribution is shown in the home crossing panel. The ODbL share-alike review for distributing DB dumps is still open.
 - Test settings still read `.env`. Any test that depends on blank keys must override settings explicitly.
 
 ## Next steps
-1. **Owner: browser smoke test with real keys** using the RUNBOOK "Manual smoke test with real Google keys" checklist. Do it with and without `GOOGLE_MAPS_MAP_ID`, on desktop and on mobile (bottom sheet vs Google logo/terms). Record the results here.
-2. Owner: review and commit Session 05; push `main` (`25dc8ea` is also unpushed).
-3. Add a JS check to CI: at least `node --check static/js/*.js`, ideally a Playwright smoke test that stubs `google.maps` and asserts bbox fetch throttling and marker diffing.
-4. **Finish crossing labels** from `wip/crossing-labels` (the 8-step plan above), then add `label` to the bbox payload and the panel.
-5. Session 06: routing provider abstraction, route ↔ crossing association, verified detours (ADR-004).
-6. M4 remainder: session-scoped server-side location (throttled, expiring) is needed only when navigation or alerts require it. Until then location stays browser-only (ADR-012).
-7. Housekeeping: Google sign-in; schedule `purge_crossing_reports`; JSON 403 for API CSRF failures; ruff; slim Dockerfile.
+1. **Owner: browser smoke test with real keys** using the RUNBOOK checklists (map/markers + the new routing section). Cover route display, "Use this route" switching, a real closed-report warning, and mobile (bottom sheet vs Google logo/terms). Record the results here.
+2. Owner: review and commit Session 06; push `main` (`25dc8ea`/`715e3e8` also unpushed).
+3. Find a Kochi route pair that produces a real `on_route` match and (if possible) a Google alternative, and verify the `verified` card live; tune the 20/50/30/100 m thresholds from real data if needed.
+4. Add a JS check to CI: at least `node --check static/js/*.js`, ideally a Playwright smoke test stubbing `google.maps` (bbox throttling, marker diffing, route switching).
+5. **Finish crossing labels** from `wip/crossing-labels` (the 8-step plan above), then add `label` to the bbox payload, panel, and route crossing list.
+6. M4 remainder: session-scoped server-side location only when navigation/alerts need it; stays browser-only until then (ADR-012). If routing needs "my location" as origin, pass it client-side opt-in per request, never stored.
+7. Housekeeping: Google sign-in; schedule `purge_crossing_reports`; JSON 403 for API CSRF failures; ruff; shared cache for the routing throttle if multi-worker; slim Dockerfile.

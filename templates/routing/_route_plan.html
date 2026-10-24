@@ -1,0 +1,184 @@
+{% load ui %}
+{# Route-plan panel. route_plan is a routing.services.RoutePlan or None. #}
+{% if route_plan %}
+  {% if route_plan.ok %}
+    <p class="mt-3 text-xs text-slate-500">
+      From <span class="font-medium text-slate-700">{{ origin|default:"your location" }}</span>
+      to <span class="font-medium text-slate-700">{{ destination }}</span>
+    </p>
+    {% if route_plan.routes|length > 1 %}
+      <div class="mt-3 space-y-1.5" role="group" aria-label="Route options">
+        {% for route in route_plan.routes %}
+          <button type="button" data-route-select="{{ route.id }}" data-route-option="{{ route.id }}"
+                  aria-pressed="{% if route.is_primary %}true{% else %}false{% endif %}"
+                  class="flex w-full items-baseline justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:border-brand-300 hover:bg-brand-50/40 data-[selected]:border-brand-600 data-[selected]:bg-brand-50 data-[selected]:ring-1 data-[selected]:ring-brand-600/40">
+            <span>
+              <span class="font-semibold text-slate-900">Route {{ forloop.counter }}</span>
+              {% if route.candidate.distance_m %}· {{ route.candidate.distance_km }} km{% endif %}
+              {% if route.candidate.duration_s %}· about {{ route.candidate.duration_min }} min{% endif %}
+              {% if route.candidate.description %}<span class="text-slate-500"> via {{ route.candidate.description }}</span>{% endif %}
+            </span>
+            <span class="shrink-0 text-xs font-medium text-slate-500">
+              {% if route.is_primary %}Recommended{% elif route.delta_duration_s is not None or route.delta_distance_m is not None %}{{ route.delta_label }}{% endif %}
+            </span>
+          </button>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% for route in route_plan.routes %}
+      <div class="card mt-3" data-route-panel="{{ route.id }}" {% if not route.is_primary %}hidden{% endif %}>
+        <div class="flex flex-wrap items-baseline gap-x-2">
+          <p class="text-sm font-semibold text-slate-900">
+            {% if route.candidate.distance_m %}{{ route.candidate.distance_km }} km{% endif %}
+            {% if route.candidate.duration_s %}· about {{ route.candidate.duration_min }} min{% endif %}
+          </p>
+          {% if route.candidate.description %}
+            <p class="text-xs text-slate-500">via {{ route.candidate.description }}</p>
+          {% endif %}
+        </div>
+        {% if route.candidate.duration_s %}
+          <p class="mt-0.5 text-xs text-slate-500">
+            {% if route_plan.traffic_aware %}Google estimate, with traffic{% else %}Google estimate, without live traffic{% endif %}
+          </p>
+        {% endif %}
+        <p class="mt-0.5 text-xs text-slate-500">
+          Planned at {{ route_plan.computed_at|date:"H:i" }} — crossing statuses as of then.
+          <a href="?origin={{ origin|urlencode }}&origin_place_id={{ origin_place_id|urlencode }}{% if origin_lat %}&origin_lat={{ origin_lat|urlencode }}&origin_lng={{ origin_lng|urlencode }}{% endif %}&destination={{ destination|urlencode }}&destination_place_id={{ destination_place_id|urlencode }}" class="font-medium text-brand-700 hover:underline">Refresh</a>
+        </p>
+
+        {% if route.is_primary and route_plan.warning_level == "closed_on_route" %}
+          <div class="mt-2 space-y-1">
+            {% include "components/alert.html" with variant="error" title="Reported closed on your route" %}
+            {% for entry in route_plan.blocking %}
+              {% if entry.crossing.match == "on_route" %}
+                <p class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900">
+                  <span class="font-semibold">{{ entry.crossing.name|default:"Unnamed level crossing" }}</span>,
+                  at {{ entry.crossing.along_km }} km along the route. Community report {{ entry.status.age }} — not official railway information.
+                </p>
+              {% endif %}
+            {% endfor %}
+          </div>
+        {% elif route.is_primary and route_plan.warning_level == "closed_near_route" %}
+          <div class="mt-2 space-y-1">
+            {% include "components/alert.html" with variant="warning" title="A crossing reported closed is near this route" body="It may be on the route — treat with caution. Community reports aren't official railway information." %}
+            {% for entry in route_plan.blocking %}
+              <p class="text-xs text-slate-600">
+                {{ entry.crossing.name|default:"Unnamed level crossing" }} — near the route at {{ entry.crossing.along_km }} km, reported {{ entry.status.age }}.
+              </p>
+            {% endfor %}
+          </div>
+        {% elif route.is_primary and route_plan.warning_level == "conflicting_on_route" %}
+          <div class="mt-2">
+            {% include "components/alert.html" with variant="warning" title="Conflicting reports on this route" body="Recent community reports disagree about a crossing on this route. Community reports aren't official railway information." %}
+          </div>
+        {% endif %}
+
+        {% if route.crossings %}
+          <p class="mt-3 text-xs font-medium text-slate-700">
+            {{ route.crossings|length }} mapped crossing{{ route.crossings|length|pluralize }} on this route
+            {% for state, count in route.counts.items %}· {{ count }} {{ state|cut:"_reported" }}{% endfor %}
+          </p>
+          <ul class="mt-1.5 divide-y divide-slate-100">
+            {% for entry in route.crossings %}
+              <li class="py-2 text-sm">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <a href="{% url 'crossing_detail' entry.crossing.crossing_id %}" class="font-medium text-brand-700 hover:underline">
+                    {{ entry.crossing.name|default:"Unnamed level crossing" }}
+                  </a>
+                  {% status_badge entry.status.state %}
+                </div>
+                <p class="mt-0.5 text-xs text-slate-500">
+                  {% if entry.crossing.match == "on_route" %}On route{% else %}Possibly on route (near the route line){% endif %}
+                  · at {{ entry.crossing.along_km }} km
+                </p>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="mt-3 text-sm text-slate-600">No mapped crossings found on this route.</p>
+        {% endif %}
+        <p class="mt-2 text-xs text-slate-500">
+          Only crossings mapped in OpenStreetMap are checked; unmapped crossings may exist.
+        </p>
+
+        {% if not route.is_primary %}
+          <button type="button" data-route-select="r0" class="btn-secondary mt-3 w-full">Back to Route 1</button>
+        {% endif %}
+      </div>
+    {% endfor %}
+
+    {% if route_plan.blocking %}
+      <div class="mt-3 space-y-2">
+        {% if route_plan.alternatives %}
+          {% for route in route_plan.alternatives %}
+            {% if route.verification == "verified" %}
+              <div class="card border-sky-200 bg-sky-50">
+                <p class="text-sm font-semibold text-sky-900">
+                  Alternative route avoids {{ route_plan.blocking_names }}
+                </p>
+                <p class="mt-0.5 text-xs text-sky-800">
+                  {% if route.delta_duration_s is not None or route.delta_distance_m is not None %}
+                    {{ route.delta_label }} ·
+                  {% endif %}
+                  {{ route.verification_detail }}
+                </p>
+                <button type="button" data-route-select="{{ route.id }}" class="btn-primary mt-2 w-full">Use this route</button>
+              </div>
+            {% elif route.verification == "uncertain" or route.verification == "unverifiable" %}
+              <div class="card">
+                <p class="text-sm font-semibold text-slate-900">
+                  Another route exists, but we couldn't verify it avoids {{ route_plan.blocking_names }}
+                </p>
+                {% if route.verification_detail %}
+                  <p class="mt-0.5 text-xs text-slate-500">{{ route.verification_detail }}</p>
+                {% endif %}
+                <button type="button" data-route-select="{{ route.id }}" class="btn-secondary mt-2 w-full">Show on map (not verified)</button>
+              </div>
+            {% endif %}
+          {% endfor %}
+          {% if route_plan.passing_alternatives %}
+            <p class="text-sm text-slate-600">
+              Google's other route{{ route_plan.passing_alternatives|length|pluralize }} also pass{{ route_plan.passing_alternatives|length|pluralize:"es" }} a reported-closed crossing — not offered.
+            </p>
+          {% endif %}
+        {% else %}
+          {% include "components/alert.html" with variant="info" title="No alternative route" body="Google returned no alternative route. Consider waiting or choosing a different route." %}
+        {% endif %}
+      </div>
+    {% endif %}
+
+    <p class="mt-3 text-xs text-slate-500">
+      Route-planning assistance only — not official railway or emergency guidance.
+      Never cross a closed gate or go around barriers.
+    </p>
+    <p class="mt-1 text-xs text-slate-400">{{ route_plan.attribution }}</p>
+    <p id="route-announce" class="sr-only" aria-live="polite"></p>
+
+  {% else %}
+    {# Error states: honest text per code; never a duration. #}
+    {% if route_plan.error == "not_configured" %}
+      {% if debug %}
+        {% include "components/alert.html" with variant="warning" title="Route planning isn't configured" body="Set GOOGLE_MAPS_SERVER_KEY in .env and enable the Routes API for it (see .env.example)." %}
+      {% else %}
+        {% include "components/alert.html" with variant="warning" title="Route planning isn't available" body="Routing isn't configured right now. Try again later." %}
+      {% endif %}
+    {% elif route_plan.error == "no_route" %}
+      {% include "components/alert.html" with variant="info" title="No route found" body="We couldn't find a driving route between these places. Check the origin and destination." %}
+    {% elif route_plan.error == "quota" or route_plan.error == "rate_limited" %}
+      {% include "components/alert.html" with variant="warning" title="Routing is busy" body="Too many route requests right now — please try again later." %}
+    {% elif route_plan.error == "auth" %}
+      {% if debug %}
+        {% include "components/alert.html" with variant="error" title="Routes API authorisation failed" body="Check GOOGLE_MAPS_SERVER_KEY and that the Routes API is enabled for it." %}
+      {% else %}
+        {% include "components/alert.html" with variant="error" title="Route planning failed" body="We couldn't reach the route provider. Try again later." %}
+      {% endif %}
+    {% elif route_plan.error == "timeout" or route_plan.error == "provider_error" %}
+      {% include "components/alert.html" with variant="error" title="Route provider unreachable" body="We couldn't reach the route provider. Try again in a moment." %}
+    {% elif route_plan.error == "invalid_request" %}
+      {% include "components/alert.html" with variant="warning" title="Pick a place from the suggestions" body="Choose a suggested place for both ends so we can plan the route." %}
+    {% else %}
+      {% include "components/alert.html" with variant="error" title="Route planning failed" body="Something went wrong planning this route. Try again." %}
+    {% endif %}
+  {% endif %}
+{% endif %}

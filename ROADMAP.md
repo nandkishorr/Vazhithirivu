@@ -21,19 +21,19 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 - [x] Attribution and source metadata visible/documented. DATA_SOURCES/RUNBOOK + "© OpenStreetMap contributors" in the home crossing panel.
 
 ## M2 — Route planning and crossing association
-- [ ] Provider-independent routing interface.
-- [ ] Origin/destination selection and route display.
-- [ ] Route geometry and travel-time metadata.
-- [ ] Identify crossings actually traversed by a route.
-- [ ] Validate alternative route avoidance.
-- [ ] Tests with mocked providers and fixed geometries.
+- [x] Provider-independent routing interface. Evidence: Session 06, `routing.providers` (`Waypoint`/`RouteCandidate`/`RoutingError`) + Google Routes impl (ADR-013).
+- [x] Origin/destination selection and route display. Evidence: Session 06, GET form → route panels + map polylines (`_route_plan.html`, `map.js setupRoutes`).
+- [x] Route geometry and travel-time metadata. Evidence: Session 06, encoded polyline → PostGIS LineString; km + "Google estimate, without live traffic".
+- [x] Identify crossings actually traversed by a route. Evidence: Session 06, `routing.analysis` — on_route requires track intersection evidence; nearby-only is `possible`.
+- [x] Validate alternative route avoidance. Evidence: Session 06, `verified` only when all blocking crossings >100 m away and the alternative has no own closed crossing; honest passes/uncertain/unverifiable states.
+- [x] Tests with mocked providers and fixed geometries. Evidence: Session 06, `routing/tests/` (polyline, provider, analysis, services, views, checks).
 
 ## M3 — Incident intelligence
 - [x] Timestamped community reports.
 - [x] Expiry, duplicate handling and conflicting-report logic.
 - [~] Status freshness and confidence display (done on crossing detail page, JSON API and the map marker panel; browser marker-click not yet verified).
-- [ ] Route-aware incident evaluation.
-- [ ] Reroute prompt with accept/reject actions.
+- [x] Route-aware incident evaluation. Evidence: Session 06, `plan_route` bulk-derives statuses and sets warning levels (closed on/near route, conflicting).
+- [x] Reroute prompt with accept/reject actions. Evidence: Session 06, user-confirmed `[data-route-select]` switching with aria-live announcements; verified-only avoidance claims.
 
 ## M4 — Opt-in real-user location
 - [x] Explicit permission action (browser-only, click-triggered `getCurrentPosition`; coordinates never leave the browser).

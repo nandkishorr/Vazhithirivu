@@ -25,21 +25,40 @@
       <div class="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pb-6 pt-1 lg:pt-4">
         <section aria-labelledby="route-heading">
           <h2 id="route-heading" class="text-sm font-semibold text-slate-900">Plan a route</h2>
-          <form method="get" action="{% url 'home' %}" class="mt-2 flex flex-col gap-3">
-            <div class="field">
-              <label class="field-label" for="id_origin">From</label>
-              <div class="relative">
+          <form id="route-form" method="get" action="{% url 'home' %}" class="mt-2 flex flex-col gap-3">
+            <input type="hidden" name="origin_lat" id="id_origin_lat" value="{{ origin_lat }}">
+            <input type="hidden" name="origin_lng" id="id_origin_lng" value="{{ origin_lng }}">
+            {% if map_config %}
+              <div class="field">
+                <label class="field-label" id="origin-picker-label">From</label>
+                <gmpx-place-picker id="origin-picker" placeholder="Starting point"
+                    country="in" location-bias="{{ map_config.center.0 }},{{ map_config.center.1 }}"
+                    radius="50000" aria-labelledby="origin-picker-label"
+                    style="width: 100%"></gmpx-place-picker>
+                <input type="hidden" name="origin" id="id_origin" value="{{ origin }}">
+                <input type="hidden" name="origin_place_id" id="id_origin_place_id" value="{{ origin_place_id }}">
+              </div>
+              <div class="field">
+                <label class="field-label" id="destination-picker-label">To</label>
+                <gmpx-place-picker id="destination-picker" placeholder="Destination"
+                    country="in" location-bias="{{ map_config.center.0 }},{{ map_config.center.1 }}"
+                    radius="50000" aria-labelledby="destination-picker-label"
+                    style="width: 100%"></gmpx-place-picker>
+                <input type="hidden" name="destination" id="id_destination" value="{{ destination }}">
+                <input type="hidden" name="destination_place_id" id="id_destination_place_id" value="{{ destination_place_id }}">
+              </div>
+            {% else %}
+              <div class="field">
+                <label class="field-label" for="id_origin">From</label>
                 <input class="field-input" type="text" name="origin" id="id_origin"
                        placeholder="Starting point" autocomplete="off" value="{{ origin }}">
               </div>
-            </div>
-            <div class="field">
-              <label class="field-label" for="id_destination">To</label>
-              <div class="relative">
+              <div class="field">
+                <label class="field-label" for="id_destination">To</label>
                 <input class="field-input" type="text" name="destination" id="id_destination"
                        placeholder="Destination" autocomplete="off" value="{{ destination }}">
               </div>
-            </div>
+            {% endif %}
             <button type="submit" class="btn-primary w-full">
               {% icon "route" class="size-4" %} Find route
             </button>
@@ -47,9 +66,12 @@
           <div class="mt-3">
             {% if route_state == "empty" %}
               {% include "components/alert.html" with variant="warning" title="Add a destination" body="Enter where you're headed, then choose Find route." %}
+            {% elif route_state == "missing_origin" %}
+              {% include "components/alert.html" with variant="warning" title="Add a starting point" body="Enter where you're leaving from, then choose Find route." %}
             {% elif route_state == "unavailable" %}
-              {% include "components/alert.html" with variant="info" title="Route planning isn't available yet" body="Routing providers aren't connected in this preview, so we can't plan a route yet." %}
-              <p class="mt-1.5 text-xs text-slate-500">You asked for a route to “{{ destination }}” — nothing was calculated.</p>
+              {% include "components/alert.html" with variant="info" title="Route planning needs the map" body="Google Maps isn't configured, so routes can't be shown. Set GOOGLE_MAPS_BROWSER_KEY to enable the map." %}
+            {% elif route_state == "planned" %}
+              {% include "routing/_route_plan.html" %}
             {% endif %}
           </div>
         </section>
@@ -195,6 +217,9 @@
           {% include "components/error_state.html" with title="Map unavailable" body="Google Maps couldn't be loaded. Check your connection or API key configuration." icon="cloud-off" %}
         </div>
         {{ map_config|json_script:"map-config" }}
+        {# Google Maps Extended Component Library (Apache-2.0, pinned) — powers gmpx-place-picker. #}
+        <script type="module" src="https://ajax.googleapis.com/ajax/libs/@googlemaps/extended-component-library/0.6.15/index.min.js"></script>
+        {{ route_data|json_script:"route-data" }}
         <noscript>
           <div class="absolute inset-x-3 top-3 z-10 mx-auto max-w-md">
             {% include "components/alert.html" with variant="warning" title="Map needs JavaScript" body="The interactive map requires JavaScript. Enable it to see the map." %}

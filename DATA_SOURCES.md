@@ -36,7 +36,7 @@ Update this file when a provider or dataset changes. Verify current terms before
 - APIs used now: Maps JavaScript API (map display, dynamic `importLibrary` bootstrap loader) and Places API (New) via `PlaceAutocompleteElement` for the From/To fields.
 - `GOOGLE_MAPS_BROWSER_KEY` is public by design and rendered in the page; restrict it by HTTP referrer and to exactly the Maps JavaScript API and Places API (New).
 - `GOOGLE_MAPS_MAP_ID` enables cloud-based map styling and is required for `AdvancedMarkerElement` (used for the opt-in user-location marker).
-- `GOOGLE_MAPS_SERVER_KEY` is reserved for future server-side calls (e.g. Routes API); it must never be sent to the browser.
+- `GOOGLE_MAPS_SERVER_KEY` is used for server-side Routes API (`computeRoutes`) route planning; it must never be sent to the browser. Restrict it to the Routes API only, no referrer restriction (server-to-server), IP restriction in production. Billing: `TRAFFIC_UNAWARE` uses the Essentials SKU (the default); `TRAFFIC_AWARE` uses the Pro SKU — opt-in only. At most ~3 routes are returned per request. Route geometry/content is never persisted in the database.
 - Map attribution and legal notices are rendered by Google itself; do not hide or cover them.
 - Google Maps Platform terms restrict caching/storing of Google content; do not persist Google-sourced place data or geometry without checking current terms.
 - Verify current pricing, quotas and billing requirements before production use.
@@ -47,11 +47,12 @@ Update this file when a provider or dataset changes. Verify current terms before
 ## UI assets
 - Lucide icons (https://lucide.dev), ISC license — inline SVG path data in `core/templatetags/ui.py`.
 - Tailwind CSS standalone CLI, pinned version + sha256 (see Dockerfile and RUNBOOK).
+- Google Maps Extended Component Library (`gmpx-place-picker` for From/To), Apache-2.0, loaded pinned at `0.6.15` from `ajax.googleapis.com` (see `templates/core/home.html`). It renders its own internal input; typed-but-unselected text is synced on submit in `static/js/map.js` — treat its shadow-DOM internals as unstable.
 
-## Routing alternatives
-- GraphHopper, openrouteservice, OSRM, or a self-hosted routing engine may be evaluated.
-- Confirm current API quotas, licensing, geometry, alternative-route and segment-exclusion capabilities before choosing.
-- Encapsulate provider behavior behind a Django service interface.
+## Routing providers
+- Google Routes API is the configured provider (`routing.providers.GoogleRoutesProvider`, ADR-013). It has no point/segment exclusion: crossing avoidance is verified afterwards against route geometry, never assumed.
+- If guaranteed segment exclusion is required, Valhalla (`exclude_locations`) or GraphHopper are documented future options behind the same provider interface; confirm quotas, licensing and exclusion semantics before adopting.
+- Mock providers in automated tests; never hit routing APIs in the test suite.
 
 ## Community crossing reports
 - `incidents.CrossingReport` rows are user-submitted open/closed observations tied to a crossing. They are **unverified** and never presented as official railway information.

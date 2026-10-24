@@ -67,6 +67,18 @@ class CrossingStatus:
     opposing_reports: int
     fresh_until: object
 
+    @property
+    def age(self):
+        """Human age of the newest report, e.g. "12 min ago" ("" if none)."""
+        if self.last_report_at is None or self.as_of is None:
+            return ""
+        seconds = (self.as_of - self.last_report_at).total_seconds()
+        if seconds < 60:
+            return "just now"
+        if seconds < 3600:
+            return f"{round(seconds / 60)} min ago"
+        return f"{round(seconds / 3600)} h ago"
+
 
 def status_label(state):
     """Human label/description for a derived state (same text as the badge)."""
