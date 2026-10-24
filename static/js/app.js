@@ -38,11 +38,22 @@
   };
   const locateBtn = document.getElementById("locate-btn");
   const locateStop = document.getElementById("locate-stop");
+  const locErrorBody = document.querySelector("[data-loc-error-body]");
+
+  // One-shot, click-only requests. A token makes late callbacks into
+  // no-ops after Stop or a newer request; coordinates never leave the
+  // browser.
+  let locToken = 0;
+  let locInFlight = false;
 
   function showLocState(name) {
     Object.keys(locBlocks).forEach((key) => {
       if (locBlocks[key]) locBlocks[key].hidden = key !== name;
     });
+  }
+
+  function setLocError(message) {
+    if (locErrorBody) locErrorBody.textContent = message;
   }
 
   function setFromField(value) {
@@ -55,29 +66,70 @@
     if (autocomplete) autocomplete.value = value;
   }
 
+  function clearLocVisuals() {
+    if (window.vz && window.vz.userMarker) {
+      window.vz.userMarker.map = null;
+      window.vz.userMarker = null;
+    }
+    if (window.vz && window.vz.userCircle) {
+      window.vz.userCircle.setMap(null);
+      window.vz.userCircle = null;
+    }
+  }
+
+  function formatAccuracy(meters) {
+    if (meters >= 1000) return "\u00b1" + (meters / 1000).toFixed(1) + " km";
+    return "\u00b1" + Math.round(meters) + " m";
+  }
+
   function onLocationSuccess(position) {
     const lat = position.coords.latitude;
     const lng = position.coords.longitude;
+    const accuracy = position.coords.accuracy;
     const note = document.querySelector("[data-loc-note]");
 
     if (window.vz && window.vz.map) {
+      const map = window.vz.map;
       const center = { lat: lat, lng: lng };
       if (window.vz.reducedMotion) {
-        window.vz.map.setCenter(center);
+        map.setCenter(center);
       } else {
-        window.vz.map.panTo(center);
+        map.panTo(center);
       }
+      if (map.getZoom() < (window.vz.crossingsMinZoom || 0)) {
+        map.setZoom(15);
+      }
+      clearLocVisuals();
       if (window.vz.hasMapId && window.vz.AdvancedMarkerElement) {
-        if (window.vz.userMarker) window.vz.userMarker.map = null;
         window.vz.userMarker = new window.vz.AdvancedMarkerElement({
-          map: window.vz.map,
+          map: map,
           position: center,
           title: "Your approximate location",
         });
-        if (note) note.textContent = "Showing your approximate location on the map.";
-      } else if (note) {
-        note.textContent =
-          "Map panned to your approximate location. No marker is shown because GOOGLE_MAPS_MAP_ID isn't configured.";
+      }
+      if (window.vz.Circle) {
+        window.vz.userCircle = new window.vz.Circle({
+          map: map,
+          center: center,
+          radius: accuracy,
+          strokeColor: "#0d9488",
+          strokeOpacity: 0.6,
+          strokeWeight: 1,
+          fillColor: "#14b8a6",
+          fillOpacity: 0.12,
+          clickable: false,
+        });
+      }
+      if (note) {
+        let text =
+          "Showing your approximate location (" +
+          formatAccuracy(accuracy) +
+          ").";
+        if (accuracy > 1000) {
+          text +=
+            " This fix is imprecise \u2014 nearby crossings may be misjudged.";
+        }
+        note.textContent = text;
       }
     } else if (note) {
       note.textContent =
@@ -91,32 +143,74 @@
   function onLocationError(error) {
     if (error && error.code === 1) {
       showLocState("denied");
-    } else {
-      showLocState("unavailable");
+      return;
     }
+    let message = "Couldn't determine your location.";
+    if (error && error.code === 2) {
+      message = "Your device couldn't determine a position right now.";
+    } else if (error && error.code === 3) {
+      message = "Finding your location took too long. Try again.";
+    }
+    setLocError(message);
+    showLocState("unavailable");
+  }
+
+  function requestLocation() {
+    if (locInFlight) return;
+    if (!("geolocation" in navigator)) {
+      setLocError("This browser doesn't support location.");
+      showLocState("unavailable");
+      return;
+    }
+    if (!window.isSecureContext) {
+      setLocError(
+        "Location needs a secure (HTTPS) connection. localhost works for development."
+      );
+      showLocState("unavailable");
+      return;
+    }
+    locInFlight = true;
+    const token = ++locToken;
+    showLocState("requesting");
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        locInFlight = false;
+        if (token !== locToken) return;
+        onLocationSuccess(position);
+      },
+      (error) => {
+        locInFlight = false;
+        if (token !== locToken) return;
+        onLocationError(error);
+      },
+      { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 }
+    );
   }
 
   if (locateBtn) {
-    locateBtn.addEventListener("click", () => {
-      if (!navigator.geolocation) {
-        showLocState("unavailable");
-        return;
-      }
-      showLocState("requesting");
-      navigator.geolocation.getCurrentPosition(onLocationSuccess, onLocationError, {
-        enableHighAccuracy: false,
-        timeout: 10000,
-        maximumAge: 60000,
-      });
-    });
+    locateBtn.addEventListener("click", requestLocation);
   }
+  document.querySelectorAll("[data-locate-retry]").forEach((btn) => {
+    btn.addEventListener("click", requestLocation);
+  });
 
   if (locateStop) {
     locateStop.addEventListener("click", () => {
-      if (window.vz && window.vz.userMarker) {
-        window.vz.userMarker.map = null;
-        window.vz.userMarker = null;
-      }
+      locToken += 1;
+      locInFlight = false;
+      clearLocVisuals();
+      const input = document.getElementById("id_origin");
+      const autocomplete =
+        input && input.parentElement
+          ? input.parentElement.querySelector("gmp-place-autocomplete")
+          : null;
+      const current =
+        autocomplete && autocomplete.value
+          ? autocomplete.value
+          : input
+            ? input.value
+            : "";
+      if (current === "My location") setFromField("");
       showLocState("idle");
     });
   }

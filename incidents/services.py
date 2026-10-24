@@ -91,15 +91,13 @@ def _reporter_key(report):
     return report.reporter_id
 
 
-def derive_status(crossing, now=None):
-    """Derive a crossing's current community-reported status."""
-    now = now or timezone.now()
-    stale_after = now - timedelta(minutes=settings.REPORT_STALE_MINUTES)
-    recent = list(
-        _visible_community_reports(crossing, now).filter(
-            created_at__gt=stale_after
-        )
-    )
+def _derive_from_reports(reports, now):
+    """Derive status from visible community reports, newest first.
+
+    ``reports`` is the same list ``derive_status`` builds as ``recent``:
+    reports with ``created_at`` in ``(now - stale, now]``.
+    """
+    recent = reports
     if not recent:
         return CrossingStatus(
             state=STATE_UNKNOWN,
@@ -179,6 +177,45 @@ def derive_status(crossing, now=None):
         opposing_reports=0,
         fresh_until=max(r.expires_at for r in supporting),
     )
+
+
+def derive_status(crossing, now=None):
+    """Derive a crossing's current community-reported status."""
+    now = now or timezone.now()
+    stale_after = now - timedelta(minutes=settings.REPORT_STALE_MINUTES)
+    recent = list(
+        _visible_community_reports(crossing, now).filter(
+            created_at__gt=stale_after
+        )
+    )
+    return _derive_from_reports(recent, now)
+
+
+def derive_statuses(crossings, now=None):
+    """Bulk-derive statuses for many crossings in one query.
+
+    Returns ``{crossing_pk: CrossingStatus}`` with an entry for every
+    input crossing (``unknown`` when it has no reports). Empty input
+    returns ``{}`` without touching the database.
+    """
+    now = now or timezone.now()
+    crossings = list(crossings)
+    if not crossings:
+        return {}
+    stale_after = now - timedelta(minutes=settings.REPORT_STALE_MINUTES)
+    reports = CrossingReport.objects.filter(
+        crossing_id__in=[c.pk for c in crossings],
+        source=CrossingReport.SOURCE_COMMUNITY,
+        moderation_status=CrossingReport.MODERATION_VISIBLE,
+        created_at__lte=now,
+        created_at__gt=stale_after,
+    ).order_by("crossing_id", "-created_at")
+    grouped = {c.pk: [] for c in crossings}
+    for report in reports:
+        grouped[report.crossing_id].append(report)
+    return {
+        c.pk: _derive_from_reports(grouped[c.pk], now) for c in crossings
+    }
 
 
 @transaction.atomic

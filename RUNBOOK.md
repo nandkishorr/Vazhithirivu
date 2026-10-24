@@ -127,7 +127,8 @@ tracks 496 kB. A full southern-zone or India import (no bbox) is not yet measure
   ```bash
   docker compose run --rm web python manage.py createsuperuser
   ```
-- Crossing pages: `/crossings/<id>/` (HTML detail + report form). JSON for the future map: `GET /api/crossings/<id>/status/` and `POST /api/crossings/<id>/reports/` (`{"state": "open"|"closed"}`, CSRF token required for session auth; 401 anon, 429 + `Retry-After` when rate limited).
+- Crossing pages: `/crossings/<id>/` (HTML detail + report form). JSON for the map: `GET /api/crossings/<id>/status/` and `POST /api/crossings/<id>/reports/` (`{"state": "open"|"closed"}`, CSRF token required for session auth; 401 anon, 429 + `Retry-After` when rate limited).
+- Map endpoint (ADR-012): `GET /api/crossings/?bbox=west,south,east,north` returns active, non-suppressed crossings (osm + manual) inside the box plus their derived community status (`{"state","label","last_report_at","last_report_age_seconds"}` — never reporter info). Bounded by `MAP_BBOX_MAX_SPAN_DEG` (rejects larger boxes with `400 {"error":"bbox_too_large"}`) and `MAP_CROSSINGS_LIMIT` (`truncated: true` when capped). Never cached, constant two queries. Example: `curl 'localhost:8000/api/crossings/?bbox=76.18,9.85,76.45,10.15'`.
 - Freshness/rate-limit policy is env-tunable (`REPORT_*`, see `.env.example`); invalid combinations fail `manage.py check` (`incidents.E001`).
 - Moderation: staff hide/restore reports in Django admin (actions or the change form); hidden reports vanish from all public output.
 - Retention purge (not scheduled — run manually or via cron):
@@ -141,8 +142,21 @@ tracks 496 kB. A full southern-zone or India import (no bbox) is not yet measure
 - Not implemented yet (Session 08). Start only via an optional Compose profile; reset only simulation-scoped records.
 
 ## Google Maps
-- The map needs `GOOGLE_MAPS_BROWSER_KEY` (Maps JavaScript API + Places API (New); restrict by HTTP referrer and those APIs) and `GOOGLE_MAPS_MAP_ID` (Maps Management / Map Styles in Cloud Console; needed for cloud styling and the location marker). `GOOGLE_MAPS_SERVER_KEY` is reserved for future server-side use — never expose it to the browser.
+- The map needs `GOOGLE_MAPS_BROWSER_KEY` (Maps JavaScript API + Places API (New); restrict by HTTP referrer and those APIs) and `GOOGLE_MAPS_MAP_ID` (Maps Management / Map Styles in Cloud Console; needed for cloud styling and AdvancedMarkerElement pins). `GOOGLE_MAPS_SERVER_KEY` is reserved for future server-side use — never expose it to the browser.
 - Blank values are OK: the app boots, `core.W001`/`core.W002` warnings are emitted, and the map region shows a not-configured (DEBUG) or generic unavailable state.
+
+### Manual smoke test with real Google keys
+Configure `GOOGLE_MAPS_BROWSER_KEY` + `GOOGLE_MAPS_MAP_ID` in `.env` (browser key restricted by HTTP referrer to `localhost:8000/*` and to Maps JavaScript API + Places API (New)), then `docker compose up -d` and check:
+- [ ] Markers appear at zoom ≥ 12; the top-left chip shows "N crossings · community status, not official" (or "No mapped crossings in this area" / "Showing the first N…" when truncated).
+- [ ] DevTools Network: a small pan inside the fetched area fires no new `/api/crossings/` request; panning far (or after 60 s) fires exactly one.
+- [ ] Zooming out below 12 clears markers and shows "Zoom in to see railway crossings".
+- [ ] Clicking a marker opens the details panel; the status badge matches the pin colour/glyph; Escape/close resets it.
+- [ ] Report "closed" via `/crossings/<id>/`, return to the map: the pin turns red ✕ within ~60 s or on the next pan.
+- [ ] Place Autocomplete suggestions appear in From/To and selecting one fills the field (hidden `*_place_id` input set).
+- [ ] "Use my location": allow → pan + marker + teal accuracy circle, "±N m" note; deny → denied state with Try again; DevTools Sensors "Location unavailable"/timeout → unavailable state with Try again; Stop → marker + circle removed, "My location" cleared from From.
+- [ ] On an insecure origin (not localhost/HTTPS) the button shows the "secure (HTTPS) connection" message.
+- [ ] On mobile, the collapsed bottom sheet does not cover Google's logo/terms links.
+- [ ] Without `GOOGLE_MAPS_MAP_ID`: circle markers with coloured glyphs still render, and the location fix still shows the accuracy circle.
 
 ## Tailwind assets
 - Tailwind CSS v4 standalone CLI (no Node/npm), pinned in the Dockerfile via `TAILWIND_VERSION` + per-arch sha256 from the release's `sha256sums.txt`.

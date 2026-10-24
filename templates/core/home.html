@@ -60,8 +60,9 @@
             <div id="loc-idle">
               <p class="text-sm font-medium text-slate-800">Location not shared</p>
               <p class="mt-1 text-sm text-slate-500">
-                Your location is used only after you click the button below. It stays on
-                this device and isn't sent to Vazhithirivu.
+                Your location is used only after you click the button below. It stays in
+                this browser and isn't sent to or stored by Vazhithirivu. The map loads
+                crossings for the area on screen.
               </p>
               <button type="button" id="locate-btn" class="btn-secondary mt-3 w-full">
                 {% icon "locate-fixed" class="size-4" %} Use my location
@@ -82,13 +83,19 @@
                 You declined the location prompt. To share your location, re-enable it in
                 your browser's site settings, then try again.
               </p>
+              <button type="button" data-locate-retry class="btn-secondary mt-3 w-full">
+                {% icon "locate-fixed" class="size-4" %} Try again
+              </button>
             </div>
             <div id="loc-unavailable" hidden>
               <p class="text-sm font-medium text-red-800">Couldn't determine your location</p>
-              <p class="mt-1 text-sm text-red-700">
+              <p class="mt-1 text-sm text-red-700" data-loc-error-body>
                 Your position is unavailable or timed out, or this browser doesn't support
                 geolocation.
               </p>
+              <button type="button" data-locate-retry class="btn-secondary mt-3 w-full">
+                {% icon "locate-fixed" class="size-4" %} Try again
+              </button>
             </div>
           </div>
         </section>
@@ -98,7 +105,7 @@
           <div class="mt-2">
             {% if not map_config %}
               {% include "components/empty_state.html" with title="No crossing selected" body="Crossings appear on the map once Google Maps is configured." icon="map-pin-off" %}
-            {% elif crossing_count == 0 %}
+            {% elif not has_crossings %}
               {% include "components/empty_state.html" with title="No crossing selected" body="Crossing data from OpenStreetMap hasn't been imported yet, so no crossings are shown on the map." icon="map-pin-off" %}
             {% else %}
               <div id="crossing-empty">
@@ -177,6 +184,10 @@
     <section aria-label="Map" class="relative min-w-0 flex-1">
       {% if map_config %}
         <div id="map" class="absolute inset-x-0 top-0 bottom-40 bg-slate-100 lg:bottom-0"></div>
+        <div id="crossings-status" role="status" aria-live="polite" hidden
+             class="absolute left-3 top-3 z-10 max-w-[calc(100%-1.5rem)] rounded-lg bg-white/95 px-3 py-1.5 text-xs text-slate-700 shadow ring-1 ring-slate-900/10">
+          <span data-crossings-status-text></span><span class="text-slate-400"> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" class="hover:underline">OpenStreetMap contributors</a></span>
+        </div>
         <div id="map-loading" class="absolute inset-x-0 top-0 bottom-40 z-10 flex items-center justify-center bg-slate-100 lg:bottom-0">
           {% include "components/spinner.html" with label="Loading map…" %}
         </div>
@@ -184,7 +195,6 @@
           {% include "components/error_state.html" with title="Map unavailable" body="Google Maps couldn't be loaded. Check your connection or API key configuration." icon="cloud-off" %}
         </div>
         {{ map_config|json_script:"map-config" }}
-        {{ crossings|json_script:"crossings-data" }}
         <noscript>
           <div class="absolute inset-x-3 top-3 z-10 mx-auto max-w-md">
             {% include "components/alert.html" with variant="warning" title="Map needs JavaScript" body="The interactive map requires JavaScript. Enable it to see the map." %}

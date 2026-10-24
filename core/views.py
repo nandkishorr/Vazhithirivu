@@ -4,12 +4,11 @@ from django.conf import settings
 from django.db import connection
 from django.http import Http404, JsonResponse
 from django.shortcuts import render
+from django.urls import reverse
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_safe
 
 logger = logging.getLogger(__name__)
-
-CROSSING_MAP_LIMIT = 5000
 
 
 @require_safe
@@ -23,6 +22,7 @@ def home(request):
         route_state = "unavailable"
 
     map_config = None
+    has_crossings = False
     if settings.GOOGLE_MAPS_BROWSER_KEY:
         map_config = {
             "key": settings.GOOGLE_MAPS_BROWSER_KEY,
@@ -31,40 +31,15 @@ def home(request):
             "zoom": settings.MAP_DEFAULT_ZOOM,
             "region": "IN",
             "language": "en",
+            "crossingsUrl": reverse("api_crossings"),
+            "crossingsMinZoom": settings.MAP_CROSSINGS_MIN_ZOOM,
+            "bboxMaxSpan": settings.MAP_BBOX_MAX_SPAN_DEG,
         }
-
-    crossings = None
-    crossing_count = 0
-    if map_config is not None:
         from railways.models import RailwayCrossing
 
-        qs = (
-            RailwayCrossing.objects.filter(is_active=True, is_suppressed=False)
-            .order_by("id")
-            .only(
-                "id",
-                "location",
-                "name",
-                "crossing_barrier",
-                "source",
-                "osm_type",
-                "osm_id",
-            )
-        )
-        crossing_count = qs.count()
-        crossings = [
-            {
-                "id": c.pk,
-                "lat": c.location.y,
-                "lng": c.location.x,
-                "name": c.name,
-                "barrier": c.crossing_barrier,
-                "source": c.source,
-                "osm_type": c.osm_type,
-                "osm_id": c.osm_id,
-            }
-            for c in qs[:CROSSING_MAP_LIMIT]
-        ]
+        has_crossings = RailwayCrossing.objects.filter(
+            is_active=True, is_suppressed=False
+        ).exists()
 
     return render(
         request,
@@ -74,8 +49,7 @@ def home(request):
             "destination": destination or "",
             "route_state": route_state,
             "map_config": map_config,
-            "crossings": crossings,
-            "crossing_count": crossing_count,
+            "has_crossings": has_crossings,
             "debug": settings.DEBUG,
         },
     )

@@ -154,3 +154,51 @@ class DeriveStatusTests(TestCase):
         status = services.derive_status(self.crossing, now=NOW)
         self.assertEqual(status.state, services.STATE_CLOSED_REPORTED)
         self.assertEqual(status.supporting_reports, 1)
+
+
+class DeriveStatusesTests(TestCase):
+    def setUp(self):
+        self.alice = get_user_model().objects.create_user("alice2")
+        self.bob = get_user_model().objects.create_user("bob2")
+
+    def test_empty_input_no_queries(self):
+        with self.assertNumQueries(0):
+            self.assertEqual(services.derive_statuses([]), {})
+
+    def test_parity_with_derive_status_in_one_query(self):
+        unknown_c = make_crossing()
+        closed_c = make_crossing()
+        make_report(closed_c, self.alice, "closed", age_seconds=60)
+        open_c = make_crossing()
+        make_report(open_c, self.alice, "open", age_seconds=60)
+        stale_c = make_crossing()
+        make_report(stale_c, self.alice, "closed", age_seconds=20 * 60)
+        conflict_c = make_crossing()
+        make_report(conflict_c, self.alice, "closed", age_seconds=120)
+        make_report(conflict_c, self.bob, "open", age_seconds=60)
+        hidden_c = make_crossing()
+        make_report(
+            hidden_c, self.alice, "closed", age_seconds=60,
+            moderation="hidden",
+        )
+        crossings = [
+            unknown_c, closed_c, open_c, stale_c, conflict_c, hidden_c,
+        ]
+
+        with self.assertNumQueries(1):
+            statuses = services.derive_statuses(crossings, now=NOW)
+
+        self.assertEqual(set(statuses), {c.pk for c in crossings})
+        for c in crossings:
+            with self.subTest(crossing=c.pk):
+                self.assertEqual(
+                    statuses[c.pk], services.derive_status(c, now=NOW)
+                )
+
+        states = {c.pk: statuses[c.pk].state for c in crossings}
+        self.assertEqual(states[unknown_c.pk], services.STATE_UNKNOWN)
+        self.assertEqual(states[closed_c.pk], services.STATE_CLOSED_REPORTED)
+        self.assertEqual(states[open_c.pk], services.STATE_OPEN_REPORTED)
+        self.assertEqual(states[stale_c.pk], services.STATE_STALE)
+        self.assertEqual(states[conflict_c.pk], services.STATE_CONFLICTING)
+        self.assertEqual(states[hidden_c.pk], services.STATE_UNKNOWN)

@@ -83,6 +83,14 @@ class HomeTests(TestCase):
     def test_post_not_allowed(self):
         self.assertEqual(Client().post("/").status_code, 405)
 
+    def test_location_card_privacy_and_retry(self):
+        response = Client().get("/")
+        self.assertContains(response, "isn't sent to or stored by")
+        self.assertContains(response, "data-loc-error-body")
+        self.assertEqual(
+            response.content.decode().count("data-locate-retry"), 2
+        )
+
 
 class BadgeTests(SimpleTestCase):
     def render_tag(self, tag, key):

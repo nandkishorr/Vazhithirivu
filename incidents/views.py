@@ -11,6 +11,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_http_methods, require_POST, require_safe
 
 from railways.models import RailwayCrossing
+from railways.queries import BBoxError, crossings_in_bbox, parse_bbox
 
 from .forms import CrossingReportForm
 from .services import (
@@ -18,6 +19,7 @@ from .services import (
     ReportNotAllowed,
     create_report,
     derive_status,
+    derive_statuses,
     public_recent_reports,
     status_label,
 )
@@ -63,6 +65,20 @@ def _status_payload(crossing, status, now):
         "fresh_until": (
             status.fresh_until.isoformat() if status.fresh_until else None
         ),
+    }
+
+
+def _status_brief(status, now):
+    """The four status fields exposed by the bbox map endpoint."""
+    payload = _status_payload(None, status, now)
+    return {
+        key: payload[key]
+        for key in (
+            "state",
+            "label",
+            "last_report_at",
+            "last_report_age_seconds",
+        )
     }
 
 
@@ -142,6 +158,59 @@ def crossing_report_submit(request, pk):
                 request, "You already reported this a moment ago."
             )
     return redirect("crossing_detail", pk=crossing.pk)
+
+
+@never_cache
+@require_safe
+def api_crossings_in_bbox(request):
+    """Crossings inside a bounded bbox, with derived community status.
+
+    Two queries total regardless of result size (crossings + reports).
+    """
+    try:
+        bbox = parse_bbox(
+            request.GET.get("bbox"), settings.MAP_BBOX_MAX_SPAN_DEG
+        )
+    except BBoxError as exc:
+        if exc.code == "bbox_too_large":
+            return JsonResponse(
+                {
+                    "error": "bbox_too_large",
+                    "max_span_degrees": settings.MAP_BBOX_MAX_SPAN_DEG,
+                },
+                status=400,
+            )
+        return JsonResponse({"error": "invalid_bbox"}, status=400)
+
+    limit = settings.MAP_CROSSINGS_LIMIT
+    crossings, truncated = crossings_in_bbox(bbox, limit)
+    now = timezone.now()
+    statuses = derive_statuses(crossings, now=now)
+    return JsonResponse(
+        {
+            "bbox": list(bbox),
+            "count": len(crossings),
+            "limit": limit,
+            "truncated": truncated,
+            "crossings": [
+                {
+                    "id": c.pk,
+                    "lat": round(c.location.y, 6),
+                    "lng": round(c.location.x, 6),
+                    "name": c.name,
+                    "barrier": c.crossing_barrier,
+                    "source": c.source,
+                    "osm_type": c.osm_type,
+                    "osm_id": c.osm_id,
+                    "status": _status_brief(statuses[c.pk], now),
+                }
+                for c in crossings
+            ],
+            "official": False,
+            "disclaimer": DISCLAIMER,
+            "attribution": "Crossing locations © OpenStreetMap contributors",
+        }
+    )
 
 
 @never_cache

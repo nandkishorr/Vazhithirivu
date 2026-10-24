@@ -23,58 +23,50 @@ def make_crossing(**kwargs):
     return RailwayCrossing.objects.create(**defaults)
 
 
-def crossings_json(response):
+def map_config_json(response):
     match = re.search(
-        r'<script id="crossings-data" type="application/json">(.*?)</script>',
+        r'<script id="map-config" type="application/json">(.*?)</script>',
         response.content.decode(),
         re.DOTALL,
     )
-    assert match is not None, "crossings-data script tag not found"
+    assert match is not None, "map-config script tag not found"
     return json.loads(match.group(1))
 
 
 @_MAP_KEY
 class CrossingMarkerTests(TestCase):
-    def test_visible_crossings_in_json_and_detail_card(self):
-        osm_c = make_crossing(
+    def test_page_config_and_detail_card(self):
+        make_crossing(
             osm_id=11,
             name="Ernakulam Crossing",
             crossing_barrier="full",
             location=Point(76.31, 9.96, srid=4326),
         )
-        manual_c = make_crossing(
+        make_crossing(
             source="manual",
             osm_type="",
             osm_id=None,
             name="Manual Fix",
             location=Point(76.32, 9.97, srid=4326),
         )
-        make_crossing(osm_id=12, is_active=False)
-        make_crossing(osm_id=13, is_suppressed=True)
 
         response = Client().get("/")
         self.assertEqual(response.status_code, 200)
-
-        data = crossings_json(response)
-        self.assertEqual(len(data), 2)
-        by_id = {c["id"]: c for c in data}
-        self.assertIn(osm_c.pk, by_id)
-        self.assertIn(manual_c.pk, by_id)
-
-        o = by_id[osm_c.pk]
-        self.assertAlmostEqual(o["lat"], 9.96)
-        self.assertAlmostEqual(o["lng"], 76.31)
-        self.assertEqual(o["name"], "Ernakulam Crossing")
-        self.assertEqual(o["barrier"], "full")
-        self.assertEqual(o["source"], "osm")
-        self.assertEqual(o["osm_type"], "node")
-        self.assertEqual(o["osm_id"], 11)
-
-        m = by_id[manual_c.pk]
-        self.assertEqual(m["source"], "manual")
-        self.assertIsNone(m["osm_id"])
-
         content = response.content.decode()
+
+        # Crossings are no longer embedded — the map fetches the bbox API.
+        self.assertNotIn("crossings-data", content)
+        self.assertNotIn("Ernakulam Crossing", content)
+        self.assertNotIn("Manual Fix", content)
+
+        config = map_config_json(response)
+        self.assertEqual(config["crossingsUrl"], "/api/crossings/")
+        self.assertEqual(config["crossingsMinZoom"], 12)
+        self.assertEqual(config["bboxMaxSpan"], 1.5)
+
+        self.assertIn('id="crossings-status"', content)
+        self.assertIn("data-crossings-status-text", content)
+
         self.assertIn('id="crossing-detail"', content)
         self.assertIn('id="crossing-empty"', content)
         self.assertIn("Status unknown", content)
@@ -105,7 +97,7 @@ class CrossingMarkerTests(TestCase):
 
     def test_status_endpoint_for_marker_crossing(self):
         # The marker panel fetches /api/crossings/<id>/status/ for crossings
-        # listed in the home-page JSON — verify that endpoint works end to end.
+        # returned by the bbox endpoint — verify it works end to end.
         from django.contrib.auth import get_user_model
 
         from incidents.services import create_report
@@ -123,14 +115,6 @@ class CrossingMarkerTests(TestCase):
         self.assertContains(response, "hasn't been imported yet")
         self.assertNotContains(response, 'id="crossing-detail"')
 
-    def test_crossing_name_escaping(self):
-        make_crossing(osm_id=20, name="</script><b>x")
-        response = Client().get("/")
-        body = response.content.decode()
-        self.assertNotIn("</script><b>x", body)
-        data = crossings_json(response)
-        self.assertEqual(data[0]["name"], "</script><b>x")
-
 
 class CrossingMarkerNoKeyTests(TestCase):
     @override_settings(DEBUG=True, GOOGLE_MAPS_BROWSER_KEY="", GOOGLE_MAPS_MAP_ID="")
@@ -139,6 +123,7 @@ class CrossingMarkerNoKeyTests(TestCase):
         response = Client().get("/")
         self.assertContains(response, "Google Maps isn't configured")
         self.assertNotContains(response, "crossings-data")
+        self.assertNotContains(response, 'id="crossings-status"')
         self.assertContains(
             response, "Crossings appear on the map once Google Maps is configured."
         )

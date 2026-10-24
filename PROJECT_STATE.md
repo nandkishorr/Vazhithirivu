@@ -3,8 +3,8 @@
 > This file is the handoff point between agent sessions. Update it at the end of every meaningful work session.
 
 ## Status
-- Current milestone: **Sessions 02–04 + OSM crossing map markers committed (`ef9dc94`) and pushed to `origin/main`, 2026-10-25.** M1 nearly done. Follow-up committed on `main` (not pushed): the marker panel now fetches live status (`/api/crossings/<id>/status/`) and links to `/crossings/<id>/`. Next: Session 05 (map & location), starting with the crossing-label WIP.
-- Git: `main` = committed, tested work (91 tests OK). Branch `wip/crossing-labels` (`7693266`, pushed) holds **incomplete, untested** work on road/place-derived crossing labels. Don't merge it as is.
+- Current milestone: **Session 05 (map integration + geolocation) implemented, uncommitted, 2026-10-25.** It sits on `25dc8ea` (`main`, not pushed). M1 is nearly done; M4 has its browser-only first steps. Next: real-browser check with keys, then crossing labels or Session 06 (routing).
+- Git: `main` = `25dc8ea` plus the uncommitted Session 05 changes (112 tests OK). Branch `wip/crossing-labels` (`7693266`, pushed) holds **incomplete, untested** work on road/place-derived crossing labels. Don't merge it as is.
 - Product: Vazhithirivu (വഴിത്തിരിവ്), "Smart routes. Smarter crossings."
 - Target demo: Kochi, Kerala; future dataset target: India-wide mapped railway crossings.
 - Stack: Django 5.2 LTS, server-rendered templates, Tailwind CSS v4 (standalone CLI, ADR-008), Google Maps JavaScript API + Places API (New) (ADR-009), PostgreSQL 17 + PostGIS 3.5, Docker Compose. Not yet added: HTMX/Alpine (not needed yet), Redis/Channels/Celery (Session 07+).
@@ -68,6 +68,43 @@ Marker panel live status (committed on `main`, not pushed):
 - Review fix: `showDetail` originally called `loadStatus` before `startStatusRefresh`, whose `stopStatusRefresh()` aborted the first fetch (panel stuck on "Checking…" for 60 s). Order swapped; `node --check` OK. JS has no automated tests, so this was caught by review only — a browser click test is still needed.
 - Tests: `core/tests/test_crossing_markers.py` extended (card markup assertions + an end-to-end `create_report` → `closed_reported` status check).
 - Verified: `node --check static/js/map.js` OK; full suite **Ran 92 tests, OK**; `manage.py check` clean; `curl /` 200 with `data-status-url-template="/api/crossings/0/status/"`; `curl /api/crossings/8/status/` 200 (`state:"unknown"`); `curl /crossings/8/` 200. **Not verified:** marker click in a real browser.
+
+Session 05 (uncommitted; ADR-012):
+- `railways/queries.py`: `parse_bbox` (`BBoxError.code` `invalid_bbox` / `bbox_too_large`), `crossings_in_bbox_queryset` (active, non-suppressed, osm + manual, GiST `location__intersects`, ordered by pk), `crossings_in_bbox(bbox, limit)` → `(rows, truncated)`.
+- `incidents/services.py`: logic moved into the pure helper `_derive_from_reports`; `derive_status` behaves exactly as before. New `derive_statuses(crossings)` does one report query for many crossings.
+- `GET /api/crossings/?bbox=w,s,e,n` (`incidents.views.api_crossings_in_bbox`, name `api_crossings`, never_cache): coords rounded to 6 decimals, `status` {state, label, last_report_at, age}, `official:false`, disclaimer, OSM attribution, `truncated`. It always costs 2 queries, whatever the result size. Settings `MAP_CROSSINGS_LIMIT` (500), `MAP_BBOX_MAX_SPAN_DEG` (1.5), `MAP_CROSSINGS_MIN_ZOOM` (12) are in base.py and `.env.example`.
+- `core/views.home`: the embedded `crossings-data` JSON and `CROSSING_MAP_LIMIT` are removed. It now uses an `.exists()` check (`has_crossings`), and `map_config` gains `crossingsUrl`/`crossingsMinZoom`/`bboxMaxSpan`.
+- `static/js/map.js`: crossings load on map `idle` with a 300 ms debounce. Nothing loads below zoom 12 ("Zoom in" chip). The view is padded 20% per side and rounded outward to 3 decimals. A refetch is skipped while the view stays inside a fetched bbox under 60 s old; there's a stale refetch on `visibilitychange`, no polling, and an AbortController plus a sequence guard. Markers are diffed by id; the selected one is never removed.
+- Pins: colour plus glyph per state (closed ✕ red, open ✓ green, conflicting ! amber, stale … light slate, unknown ? slate — never green). AdvancedMarker `PinElement` is used with a Map ID, legacy circle `Marker` without one. Titles read "… (community reports, not official)". `#crossings-status` chip (aria-live) with OSM attribution. The detail-card status fetch also updates its pin. AdvancedMarker listens to `gmp-click` only.
+- Lead review fix: legacy markers were removed via `marker.map = null`, which `google.maps.Marker` ignores. They now use `setMap()` (`setMarkerMap` helper); `node --check` OK.
+- `static/js/app.js` geolocation (still one-shot, click-only, coords never sent):
+  - error states: unsupported, insecure context (HTTPS hint), denied, position unavailable, timeout (15 s);
+  - "Try again" buttons;
+  - a token makes late callbacks no-ops after Stop;
+  - zooms to 15 when below min zoom;
+  - always draws an accuracy `Circle` (so there's an indicator even without a Map ID), notes "±N m" and warns above 1 km;
+  - Stop removes the marker and circle and clears "My location".
+- Tests:
+  - new `railways/tests/test_queries.py` (parsing, inclusion/boundary, limit/truncated, GiST index visible in `EXPLAIN` with `enable_seqscan=off`);
+  - new `incidents/tests/test_map_api.py`;
+  - `DeriveStatusesTests` (parity with `derive_status`, 1 query);
+  - `core/tests/test_crossing_markers.py` rewritten;
+  - location markup test in `test_ui.py`.
+- Docs: ADR-012, RUNBOOK (endpoint + **manual smoke-test checklist with real Google keys** under "Google Maps"), ROADMAP (M1 bbox ticked, M4 explicit-permission/stop ticked as browser-only), `.env.example`.
+
+## Commands/tests run (Session 05, actual outcomes — single end-of-session pass)
+| Command | Result |
+|---|---|
+| `node --check static/js/map.js static/js/app.js` | OK (map.js re-checked OK after the lead's `setMarkerMap` fix) |
+| `docker compose run --rm web python manage.py makemigrations --check --dry-run` | No changes detected |
+| `docker compose run --rm web python manage.py check` | No issues (0 silenced) |
+| `docker compose run --rm web python manage.py test --settings=config.settings.test` | **Ran 112 tests, OK** (was 92) |
+| `curl 'localhost:8000/api/crossings/?bbox=76.18,9.85,76.45,10.15'` | 200, `count: 127`, `truncated: false` (real Kochi data) |
+| `curl …?bbox=a,b,c,d` / `…?bbox=0,0,2,2` | 400 `invalid_bbox` / 400 `bbox_too_large` (`max_span_degrees: 1.5`) |
+| `curl -s localhost:8000/ \| grep -c crossings-data` | 0; `/` 200 |
+| `docker compose run --rm tailwind tailwindcss -i assets/tailwind/input.css -o static/css/app.css --minify` | Done (chip classes compiled) |
+
+Not verified: anything in a real browser — marker loading/diffing, pin colours, chip, clicks, the legacy-Marker path, geolocation states, the accuracy circle. JS has no automated tests. Follow the RUNBOOK checklist.
 
 WIP on branch `wip/crossing-labels`: derived crossing labels. It's incomplete, with no migration, tests or run.
 - Goal: most OSM crossings have no `name` (0 of the 5 sampled in Kochi had one). Label each crossing from the road through it or the nearest named place. All values must come from OSM.
@@ -142,16 +179,10 @@ Not run: browser rendering with real Google keys (none configured), device/visua
 - Test settings still read `.env`. Any test that depends on blank keys must override settings explicitly.
 
 ## Next steps
-1. **Finish crossing labels** from branch `wip/crossing-labels`: rebase or merge onto `main`, then complete the 8-step plan in "What exists now". Re-run the Kochi import and record the label coverage.
-2. **Browser check with real keys** (owner): map, Map ID style, crossing markers + panel incl. live status fetch (desktop and mobile sheet), Place Autocomplete, "Use my location", and Google logo/terms not covered.
-3. **Session 05** (`prompts/sessions/SESSION_05_MAP_AND_LOCATION.md`):
-   - a bbox/nearby crossing PostGIS query + JSON endpoint, for when the dataset outgrows the 5000 cap;
-   - colour pins by derived status via a bulk/bbox status endpoint (always with a label, never green for "no report");
-   - an opt-in, session-scoped location flow.
-5. Then Session 06 (routing: provider abstraction, route ↔ crossing association, verified detours) and Session 07 (realtime + Celery). The closed-gate → reroute trigger the owner wants depends on both.
-6. Housekeeping:
-   - Google sign-in via a vetted package (replaces the interim LoginView);
-   - schedule `purge_crossing_reports` (Session 07);
-   - JSON 403 for API CSRF failures;
-   - ruff + `node --check` in CI;
-   - slim the Dockerfile.
+1. **Owner: browser smoke test with real keys** using the RUNBOOK "Manual smoke test with real Google keys" checklist. Do it with and without `GOOGLE_MAPS_MAP_ID`, on desktop and on mobile (bottom sheet vs Google logo/terms). Record the results here.
+2. Owner: review and commit Session 05; push `main` (`25dc8ea` is also unpushed).
+3. Add a JS check to CI: at least `node --check static/js/*.js`, ideally a Playwright smoke test that stubs `google.maps` and asserts bbox fetch throttling and marker diffing.
+4. **Finish crossing labels** from `wip/crossing-labels` (the 8-step plan above), then add `label` to the bbox payload and the panel.
+5. Session 06: routing provider abstraction, route ↔ crossing association, verified detours (ADR-004).
+6. M4 remainder: session-scoped server-side location (throttled, expiring) is needed only when navigation or alerts require it. Until then location stays browser-only (ADR-012).
+7. Housekeeping: Google sign-in; schedule `purge_crossing_reports`; JSON 403 for API CSRF failures; ruff; slim Dockerfile.

@@ -15,8 +15,8 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 - [~] Google Maps JavaScript API map page + Place Autocomplete (ADR-009). Implemented and unit-tested; not yet exercised in a browser with real keys.
 - [x] Crossing/track models and small test fixture. Evidence: Session 03, `railways` app, synthetic `sample_v1/v2.osm` fixtures (ADR-010).
 - [x] Idempotent OSM import command. Evidence: Session 03, `import_osm_railways` (pyosmium 4.3.2). Real Kochi import (Geofabrik southern zone + bbox): 127 crossings / 330 tracks; rerun created 0.
-- [ ] Nearby crossing query using PostGIS (bbox/nearby endpoint). Today the home page embeds up to 5000 active crossings.
-- [~] Map markers sourced from the local database. 127 Kochi markers + details panel (always "Unknown"), 91 tests OK. Not clicked in a real browser. Live status isn't wired in yet.
+- [x] Nearby crossing query using PostGIS (bbox/nearby endpoint). Evidence: Session 05, `GET /api/crossings/?bbox=` (bounded, GiST-indexed, `MAP_CROSSINGS_LIMIT` cap, constant-query derived statuses; ADR-012).
+- [~] Map markers sourced from the local database. Bbox-loaded, status-coloured pins with glyphs + details panel + live status fetch; not yet clicked in a real browser (RUNBOOK smoke checklist).
 - [~] Human-readable crossing labels (road name / nearest place from OSM). Incomplete WIP on branch `wip/crossing-labels`.
 - [x] Attribution and source metadata visible/documented. DATA_SOURCES/RUNBOOK + "© OpenStreetMap contributors" in the home crossing panel.
 
@@ -36,8 +36,8 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 - [ ] Reroute prompt with accept/reject actions.
 
 ## M4 — Opt-in real-user location
-- [ ] Explicit permission action.
-- [ ] Pause/stop sharing.
+- [x] Explicit permission action (browser-only, click-triggered `getCurrentPosition`; coordinates never leave the browser).
+- [x] Pause/stop sharing (Stop button removes marker/circle and invalidates pending callbacks).
 - [ ] Throttled location updates and session scope.
 - [ ] Privacy controls and expiry/cleanup.
 - [ ] No public exposure of exact location by default.
