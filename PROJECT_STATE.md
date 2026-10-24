@@ -3,12 +3,12 @@
 > This file is the handoff point between agent sessions. Update it at the end of every meaningful work session.
 
 ## Status
-- Current milestone: **M0 complete (repository audit, Session 00, 2026-10-24).** Next: M1 / Session 01 (project foundation).
+- Current milestone: **Session 01 (project foundation) complete, 2026-10-25.** M1 in progress. Next: Session 02 (UI foundation, Tailwind).
 - Product: Vazhithirivu (വഴിത്തിരിവ്), "Smart routes. Smarter crossings."
 - Target demo: Kochi, Kerala; future dataset target: India-wide mapped railway crossings.
-- Stack target: Django server-rendered templates, Tailwind CSS, HTMX/Alpine, Google Maps Platform where configured, OSM reference data, PostgreSQL/PostGIS, optional Redis/Channels/Celery, Docker Compose.
-- **Every service, including PostgreSQL/PostGIS, runs as a container** (owner decision, ADR-006). Do not use the host's Homebrew Postgres.
-- Simulator: optional isolated service; normal app must work without it.
+- Stack: Django 5.2 LTS, server-rendered templates, PostgreSQL 17 + PostGIS 3.5 (GeoDjango), Docker Compose. Not yet added: Tailwind/HTMX/Alpine (Session 02), Redis/Channels/Celery (Session 07+).
+- **Every service runs as a container** (ADR-006). Do not use the host's Homebrew Postgres.
+- Simulator: optional isolated service (not built); the normal app must work without it.
 
 ## Architecture invariants
 - OSM geometry is reference data, not live crossing status.
@@ -17,71 +17,46 @@
 - A detour is valid only after checking that it avoids the affected crossing/blocked segment.
 - Do not query Overpass for each user or location update; import data and query PostGIS.
 - Full-country OSM import must be explicit, never run at web startup.
+- Database must be PostGIS; there is no SQLite fallback (ADR-007).
 
-## Verified repository facts (Session 00 audit, 2026-10-24)
-- Remote `origin` = `https://github.com/nandkishorr/Vazhithirivu.git`; branch `main`, up to date with `origin/main`.
-- Git history: one commit (`2127645 Initial commit`), which adds only `LICENSE` (MIT, © 2026 Nandkishor R).
-- Working tree:
-  - `LICENSE` is **deleted but not committed**. Not restored, because this may be the owner's intent. **Owner decision needed**: restore it with `git restore LICENSE` or confirm deletion. Also check MIT code licensing against ODbL obligations for distributed OSM-derived data.
-  - Untracked: the specification bundle (`AGENTS.md`, `MASTER_PROMPT.md`, `PROJECT_STATE.md`, `DECISIONS.md`, `ROADMAP.md`, `DATA_SOURCES.md`, `RUNBOOK.md`, `README.md`, `.agents/skills/vazhithirivu/SKILL.md`, `prompts/sessions/SESSION_00..10` + `README.md`) and a macOS `.DS_Store`.
-- All shared instruction files listed in Session 00 are present; none were missing.
-- **No application code exists.** There are no:
-  - dependency manifests (`requirements*.txt`, `pyproject.toml`, `package.json`)
-  - Django project/apps, `manage.py`, models, migrations, templates or static assets
-  - Tailwind config
-  - `Dockerfile` or `docker-compose.yml`
-  - `.env.example` or `.gitignore`
-  - tests, CI config, or lint/format config
-- The root `README.md` describes the spec bundle, not the product. Session 10 should replace or expand it.
+## What exists now (Session 01)
+- `manage.py`, `config/` (urls, wsgi, asgi, `settings/{base,dev,test,prod}.py`). Settings use `django-environ`, and `.env` is optional (`DJANGO_READ_DOT_ENV=0` disables it).
+- `core/` app: `views.py` has `/healthz/` (liveness, no DB) and `/readyz/` (`SELECT 1` + `PostGIS_Lib_Version()`, 503 on failure, no error details in the body). Tests are in `core/tests/`.
+- `requirements/base.txt` pins: Django==5.2.18, psycopg[binary]==3.3.6, django-environ==0.14.0, gunicorn==26.2.0, whitenoise==6.12.0. `requirements/dev.txt` = base for now.
+- `Dockerfile` (python:3.12-slim-bookworm, GDAL/GEOS/PROJ, non-root `app`, build-time collectstatic, gunicorn CMD). `.dockerignore`.
+- `docker-compose.yml`: `db` (`${POSTGIS_IMAGE:-postgis/postgis:17-3.5}`, `platform: linux/amd64`, `pgdata` volume, pg_isready healthcheck, no host port) and `web` (dev runserver, bind mount, `${WEB_PORT:-8000}`, `/healthz/` healthcheck, optional `.env`).
+- `.env.example` (placeholders only), `.gitignore` (covers `.env`, `.DS_Store`, data/PBF files, staticfiles).
+- No models beyond Django contrib. No templates or UI yet.
 
-### Reusable existing work
-- Specification, safety rules, domain model, roadmap and the session prompt sequence are complete and consistent. No architecture conflicts were found between `MASTER_PROMPT.md`, `AGENTS.md`, `SKILL.md`, `DECISIONS.md` and the session prompts.
-- Minor inconsistencies to settle during implementation:
-  - Map provider: ADR-001/AGENTS name Leaflet; MASTER_PROMPT prefers Google Maps when configured. Recommendation: Leaflet + OSM tiles as the default/no-key path, with Google Maps behind a provider switch. Record the choice as an ADR in Session 02/05.
-  - Routing engine: none chosen. Google alternatives cannot guarantee crossing avoidance (ADR-004). Evaluate a self-hostable engine with exclusion support (GraphHopper/OSRM/openrouteservice) in Session 06.
-
-### Host environment (macOS, Apple Silicon/arm64)
-- Docker 29.8.2 + Compose v5.5.1. The daemon was not running at first. It was started with `open -a Docker` and then responded (`aarch64`, 12 CPUs, ~8 GB RAM for Docker).
-- Host tools present: Python 3.14.6 (default `python3`), Python 3.13.11, Node 25.6.1, npm 11.9.0, Homebrew PostgreSQL 17.7 (running on :5432, **no PostGIS extension available**), Redis 8.4.0.
-- Host tools missing: GDAL/`ogr2ogr`, `osmium`, `uv`, Python 3.12. This is irrelevant if everything runs in containers (ADR-006). GDAL/GEOS/PROJ must be installed in the web image.
-- Host port 5432 is already used by Homebrew Postgres. The Compose `db` service must not publish to host 5432; use another host port or don't publish it.
-
-## Commands/tests run (Session 00)
+## Commands/tests run (Session 01, actual outcomes)
 | Command | Result |
 |---|---|
-| `git status`, `git log`, `git show --stat HEAD`, `git remote -v`, `git branch -a` | Facts above |
-| `git diff --check` | Exit 0 |
-| Toolchain version probes (`python3`, `node`, `docker`, `psql`, …) | Facts above |
-| `psql -d postgres -c "select … from pg_available_extensions where name like 'postgis%'"` (host) | No rows. Host Postgres has no PostGIS |
-| `docker run postgis/postgis:16-3.4` + `psql` inside | Container started. `CREATE EXTENSION postgis` reported "already exists", so PostGIS is preinstalled. Docker warned the image is **linux/amd64 only** and runs under emulation on arm64. Container stopped (`--rm`). |
-| Test suite | **None exists, so nothing to run.** No lint/type/format tooling is configured. |
-| App startup | **Not possible.** There is no application. |
+| `docker compose build web` | OK |
+| `docker compose up -d db web` (no `.env` present) | Both healthy |
+| `docker compose run --rm web python manage.py migrate` | Contrib migrations applied |
+| `curl -i localhost:8000/healthz/` | 200 `{"status":"ok"}` |
+| `curl -i localhost:8000/readyz/` | 200 `{"status":"ok","checks":{"database":"ok","postgis":"ok"}}` |
+| `docker compose run --rm web python manage.py test --settings=config.settings.test` | **Ran 10 tests, OK** (re-run after the final prod-key edit: still 10 OK) |
+| `docker compose run --rm web python manage.py check` | No issues |
+| prod `check --deploy` with dummy secret/hosts | 1 warning, `security.W004` (HSTS=0 by default; this is intended). Zero warnings with `DJANGO_SECURE_HSTS_SECONDS` set (covered by a test) |
+| `psql … -c "select postgis_full_version();"` | POSTGIS 3.5.2, PGSQL 170, GEOS 3.9.0, PROJ 7.2.1 |
+| `docker compose config` | Valid |
 
-Not verified, deferred to test time by the owner: the full `postgis_full_version()` output, and whether a native arm64 PostGIS image (e.g. a multi-arch community image) should replace the emulated amd64 image.
+Tests cover: healthz 200/405, readyz 200 against real PostGIS, readyz 503 without leaking the exception, prod failures for a missing/insecure/placeholder secret and missing hosts, prod `check --deploy` passing, rejection of a non-PostGIS `DATABASE_URL` (postgres://, sqlite://), and dev env parsing.
 
 ## Known risks / open questions
-- `LICENSE` deletion pending owner decision (see above).
-- PostGIS image is amd64-only. Emulation on Apple Silicon is slower; choose and pin a multi-arch image or accept emulation in Session 01.
-- Google Maps Platform credentials, billing, quotas, and permitted storage/caching must be configured and verified.
-- Google route alternatives do not guarantee exclusion of an arbitrary crossing.
-- OSM coverage of level crossings is incomplete and requires quality checks/manual corrections.
-- India-wide PBF import size, processing time, and refresh strategy are unmeasured. Docker currently has ~8 GB RAM, which may limit a full-country import.
-- Pin dependency versions in Session 01 (Python 3.12/3.13 base image recommended; avoid 3.14 until GeoDjango/psycopg wheels are confirmed).
-- Decide whether road-segment graph data is needed for guaranteed crossing avoidance.
-
-## Recommended implementation order
-Follows the session prompts, M1→M6:
-1. Session 01: Django skeleton, env-driven settings, `.gitignore`, `.env.example`, Dockerfile (GDAL/GEOS/PROJ), Compose `web` + `db` (PostGIS) + `redis`, health endpoint, first tests run in containers.
-2. Session 02: Tailwind build pipeline (also in Docker), base layout/partials, map shell.
-3. Session 03: `RailwayCrossing`/`RailwayTrack` models, Kochi fixture, idempotent PBF importer.
-4. Session 04: reports and derived status (no report means UNKNOWN).
-5. Session 05: map markers from PostGIS, bbox endpoint, opt-in geolocation.
-6. Session 06: routing abstraction, route–crossing association, verified avoidance.
-7. Sessions 07–10: realtime, simulator, security/integration tests, polish/release.
+- `LICENSE` (MIT) restored by owner decision (2026-10-25). Still to check: MIT code licensing vs ODbL obligations for distributed OSM-derived data.
+- PostGIS runs under amd64 emulation on Apple Silicon (owner chose official `postgis/postgis` images). This is slower; import performance in Session 03 is unmeasured.
+- The `web` bind mount shadows the image's collected static files in dev (harmless; prod image unaffected).
+- `libgdal-dev` makes the image large. A runtime-only package set could slim it later.
+- Google Maps credentials, quotas and storage terms are not configured or verified. Google alternatives cannot guarantee crossing avoidance.
+- OSM crossing coverage is incomplete; the India-wide PBF size and memory requirements (~8 GB Docker RAM) are unmeasured.
+- Routing engine with segment exclusion is not chosen (Session 06).
+- Spec bundle committed in `f3fd912`; Session 01 foundation committed on top of it (not pushed).
 
 ## Next steps
-1. Owner: decide on `LICENSE` (restore or confirm deletion). Optionally commit the spec bundle as the baseline.
-2. Run `prompts/sessions/SESSION_01_PROJECT_FOUNDATION.md`.
-3. In Session 01, all services run in Docker Compose (ADR-006). Pin a PostGIS image (decide between native arm64 and emulated amd64) and avoid publishing host port 5432.
-4. Add `.gitignore` (including `.DS_Store`, `.env`, OSM data files) and `.env.example`.
-5. Establish the container test command (`docker compose run --rm web python manage.py test`) and record verified output in `RUNBOOK.md`.
+1. Owner: push `main` when ready.
+2. Session 02: Tailwind build pipeline (dev watch + production build in Docker), base layout/partials, map shell. Record a map-provider ADR (recommendation: Leaflet + OSM tiles by default, Google behind a switch).
+3. Session 03: `RailwayCrossing`/`RailwayTrack` models (SRID 4326, spatial indexes), Kochi fixture, idempotent PBF importer as an explicit command/Compose profile.
+4. Add lint/format tooling (e.g. ruff) to `requirements/dev.txt` and CI that runs `manage.py test` in Compose.
+5. Consider slimming the Dockerfile (runtime GDAL libs only) and a multi-stage build once Tailwind is added.

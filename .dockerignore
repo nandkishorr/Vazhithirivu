@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+!.env.example
+__pycache__
+*.pyc
+staticfiles
+media
+data/
+*.pbf
+*.osm
+.DS_Store
+node_modules
+.venv
+venv
+.coverage
+htmlcov

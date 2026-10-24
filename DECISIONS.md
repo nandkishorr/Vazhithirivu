@@ -37,6 +37,13 @@ Record lasting decisions here. Add date, decision, rationale, and consequences. 
 - Decision: PostgreSQL/PostGIS, Redis, web, Celery workers, importer jobs and the simulator all run as Docker Compose services. Development and tests do not use host-installed Postgres/Redis/GDAL.
 - Rationale: Reproducible environments. The host Postgres (Homebrew 17) lacks PostGIS and the host lacks GDAL.
 - Consequences: The web image must include GDAL/GEOS/PROJ. Tests run via `docker compose run --rm web …`. Don't publish the DB on host port 5432, because Homebrew Postgres already uses it. `postgis/postgis` images are amd64-only, so pin an image and document whether emulation or a multi-arch image is used on Apple Silicon.
+- Implementation (Session 01, 2026-10-25): `docker-compose.yml` with `db` (`${POSTGIS_IMAGE:-postgis/postgis:17-3.5}`, `platform: linux/amd64`, owner chose official images over multi-arch community images; `16-3.4` selectable) and `web` (python:3.12-slim-bookworm + GDAL/GEOS/PROJ). DB port not published.
+
+## ADR-007 — Environment-driven split settings, PostGIS-only database
+- Status: Accepted (2026-10-25, Session 01)
+- Decision: `config/settings/{base,dev,test,prod}.py` read config via `django-environ` (`.env` optional, real env wins). `DATABASE_URL` must resolve to the PostGIS backend; there is no SQLite fallback. Prod requires a real `DJANGO_SECRET_KEY` and `DJANGO_ALLOWED_HOSTS`. Static files use WhiteNoise; WSGI runs on gunicorn. Redis/Celery/Channels are deferred until a feature needs them (realtime, Session 07).
+- Rationale: Spatial features must never silently run on a database that cannot support them. Booting dev must need no paid keys or secrets.
+- Consequences: Tests require the Compose PostGIS service. `/healthz/` (liveness) and `/readyz/` (DB + PostGIS) are the operational checks.
 
 ## Updating decisions
 When a proposal becomes implemented, update its status and include the implementation reference/PR if known. Add a new ADR rather than silently rewriting a decision whose rationale materially changed.

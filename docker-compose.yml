@@ -1,0 +1,48 @@
+services:
+  db:
+    image: ${POSTGIS_IMAGE:-postgis/postgis:17-3.5}
+    platform: linux/amd64
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vazhithirivu}
+      POSTGRES_USER: ${POSTGRES_USER:-vazhithirivu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vazhithirivu}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  web:
+    build:
+      context: .
+      args:
+        REQUIREMENTS: requirements/dev.txt
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.dev}
+      DATABASE_URL: postgis://${POSTGRES_USER:-vazhithirivu}:${POSTGRES_PASSWORD:-vazhithirivu}@db:5432/${POSTGRES_DB:-vazhithirivu}
+    command: python manage.py runserver 0.0.0.0:8000
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz/', timeout=5)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  pgdata:

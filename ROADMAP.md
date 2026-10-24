@@ -8,8 +8,9 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 - [x] Fill `PROJECT_STATE.md` with actual repository facts.
 - [x] Record architecture decisions. Added ADR-006 (all services containerised). Exact run commands are deferred to Session 01, because no app exists to run.
 
-## M1 — Local map and crossing catalogue — NOT STARTED
-- [ ] Docker Compose: Django + PostgreSQL/PostGIS; optional Redis. All services containerised (ADR-006). Don't use host Postgres or publish host port 5432.
+## M1 — Local map and crossing catalogue — IN PROGRESS
+- [x] Docker Compose: Django + PostgreSQL/PostGIS. All services are containerised (ADR-006), and the DB port is not published. Redis is deferred (ADR-007). Evidence: Session 01, 10 tests OK, `/readyz/` 200 with PostGIS 3.5.2.
+- [x] Env-driven settings (dev/test/prod), `.env.example`, `.gitignore`, health endpoints.
 - [ ] Tailwind build integrated with Django and Docker.
 - [ ] Leaflet or Google Maps JavaScript API map page.
 - [ ] Crossing/track models and small test fixture.
