@@ -104,7 +104,10 @@
               <div id="crossing-empty">
                 {% include "components/empty_state.html" with title="No crossing selected" body="Select a crossing marker on the map to see its details." icon="map-pin-off" %}
               </div>
-              <div id="crossing-detail" hidden tabindex="-1" class="card focus:outline-none focus:ring-2 focus:ring-brand-600/40">
+              <div id="crossing-detail" hidden tabindex="-1"
+                   data-status-url-template="{% url 'api_crossing_status' 0 %}"
+                   data-detail-url-template="{% url 'crossing_detail' 0 %}"
+                   class="card focus:outline-none focus:ring-2 focus:ring-brand-600/40">
                 <div class="flex items-start justify-between gap-2">
                   <h3 class="text-sm font-semibold text-slate-900" data-crossing-name>Unnamed level crossing</h3>
                   <button type="button" id="crossing-close" class="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600" aria-label="Close crossing details">
@@ -112,13 +115,21 @@
                   </button>
                 </div>
                 <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                  {% status_badge "unknown" %}
+                  <span data-status-variant="closed_reported" hidden>{% status_badge "closed_reported" %}</span>
+                  <span data-status-variant="open_reported" hidden>{% status_badge "open_reported" %}</span>
+                  <span data-status-variant="conflicting" hidden>{% status_badge "conflicting" %}</span>
+                  <span data-status-variant="stale" hidden>{% status_badge "stale" %}</span>
+                  <span data-status-variant="unknown">{% status_badge "unknown" %}</span>
                   <span data-source-variant="osm" hidden>{% source_badge "osm" %}</span>
                   <span data-source-variant="manual" hidden>{% source_badge "manual" %}</span>
                 </div>
+                <p data-status-summary class="mt-2 text-xs text-slate-600" aria-live="polite"></p>
+                <p data-status-error hidden class="mt-1 text-xs text-amber-700">
+                  Couldn't load community reports right now — showing Unknown.
+                </p>
                 <p class="mt-2 text-xs text-slate-500">
-                  No reports yet — status unknown. This isn't official railway information,
-                  and no report doesn't mean the gate is open.
+                  Community reports are unverified and aren't official railway
+                  information, and no report doesn't mean the gate is open.
                 </p>
                 <dl class="mt-3 space-y-1 text-xs">
                   <div class="flex justify-between gap-2">
@@ -133,6 +144,10 @@
                 <a data-crossing-osm-link href="#" target="_blank" rel="noopener" hidden
                    class="mt-3 inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:text-brand-800 hover:underline">
                   View on OpenStreetMap
+                </a>
+                <a data-crossing-detail-link href="#"
+                   class="btn-secondary mt-3 inline-flex min-h-11 items-center gap-1.5">
+                  {% icon "users" class="size-4" %} Report or view details
                 </a>
               </div>
               <p class="mt-2 text-xs text-slate-400">

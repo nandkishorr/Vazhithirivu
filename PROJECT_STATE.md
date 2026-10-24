@@ -3,7 +3,7 @@
 > This file is the handoff point between agent sessions. Update it at the end of every meaningful work session.
 
 ## Status
-- Current milestone: **Sessions 02–04 + OSM crossing map markers committed (`ef9dc94`) and pushed to `origin/main`, 2026-10-25.** M1 nearly done. Next: Session 05 (map & location). It starts by finishing the crossing-label WIP and wiring live status into the marker panel (see Next steps).
+- Current milestone: **Sessions 02–04 + OSM crossing map markers committed (`ef9dc94`) and pushed to `origin/main`, 2026-10-25.** M1 nearly done. Follow-up committed on `main` (not pushed): the marker panel now fetches live status (`/api/crossings/<id>/status/`) and links to `/crossings/<id>/`. Next: Session 05 (map & location), starting with the crossing-label WIP.
 - Git: `main` = committed, tested work (91 tests OK). Branch `wip/crossing-labels` (`7693266`, pushed) holds **incomplete, untested** work on road/place-derived crossing labels. Don't merge it as is.
 - Product: Vazhithirivu (വഴിത്തിരിവ്), "Smart routes. Smarter crossings."
 - Target demo: Kochi, Kerala; future dataset target: India-wide mapped railway crossings.
@@ -62,7 +62,12 @@ OSM crossing map markers (after Session 03, committed in `ef9dc94`):
 - `static/js/map.js` `setupCrossingMarkers`: with a Map ID it uses neutral slate `AdvancedMarkerElement`/`PinElement` markers; otherwise classic `Marker`. Click fills the card via `textContent` and highlights the pin; Escape/close resets. `window.vz.crossingMarkers` holds the markers. `static/js/app.js` exposes `window.vz.expandSheet` (mobile sheet).
 - Tests: `core/tests/test_crossing_markers.py` (4). `HomeTests` are now `TestCase`.
 - Verified: full suite **Ran 91 tests, OK**; `node --check` clean; `curl /` contains 127 crossings (real `.env` key). **Not verified:** clicking markers in a real browser.
-- The marker panel always shows **Unknown**. It does not yet call the Session 04 status API, and it doesn't link to `/crossings/<id>/` (where reports are made).
+Marker panel live status (committed on `main`, not pushed):
+- `templates/core/home.html`: `#crossing-detail` carries `data-status-url-template`/`data-detail-url-template` (built with `{% url %}`), five `data-status-variant` badge spans (unknown visible by default), `data-status-summary` (`aria-live`) + `data-status-error` paragraphs, and a `data-crossing-detail-link` "Report or view details" button.
+- `static/js/map.js` `setupCrossingMarkers`: on `showDetail` it resets to Unknown, sets the detail link, and `loadStatus(id)` fetches the status JSON (`credentials: same-origin`, `Accept: application/json`, AbortController, ignored if selection changed). Unknown/stale/reported/conflicting summaries rendered via `textContent` only; failures show Unknown + error note. Status refreshes every 60 s while the card is open (skipped when `document.hidden`), cleared on close/reselect; double marker clicks can't spawn duplicate intervals/fetches. No pin colouring yet — needs a bulk endpoint.
+- Review fix: `showDetail` originally called `loadStatus` before `startStatusRefresh`, whose `stopStatusRefresh()` aborted the first fetch (panel stuck on "Checking…" for 60 s). Order swapped; `node --check` OK. JS has no automated tests, so this was caught by review only — a browser click test is still needed.
+- Tests: `core/tests/test_crossing_markers.py` extended (card markup assertions + an end-to-end `create_report` → `closed_reported` status check).
+- Verified: `node --check static/js/map.js` OK; full suite **Ran 92 tests, OK**; `manage.py check` clean; `curl /` 200 with `data-status-url-template="/api/crossings/0/status/"`; `curl /api/crossings/8/status/` 200 (`state:"unknown"`); `curl /crossings/8/` 200. **Not verified:** marker click in a real browser.
 
 WIP on branch `wip/crossing-labels`: derived crossing labels. It's incomplete, with no migration, tests or run.
 - Goal: most OSM crossings have no `name` (0 of the 5 sampled in Kochi had one). Label each crossing from the road through it or the nearest named place. All values must come from OSM.
@@ -138,10 +143,10 @@ Not run: browser rendering with real Google keys (none configured), device/visua
 
 ## Next steps
 1. **Finish crossing labels** from branch `wip/crossing-labels`: rebase or merge onto `main`, then complete the 8-step plan in "What exists now". Re-run the Kochi import and record the label coverage.
-2. **Wire live status into the marker panel:** on marker click, fetch `GET /api/crossings/<id>/status/`. Show the derived state with freshness and "community report — not official", and fall back to Unknown on error. Link "Report / details" to `/crossings/<id>/`. Optionally colour pins by derived status (closed/conflicting/stale/unknown), always with a label and never green for "no report".
-3. **Browser check with real keys** (owner): map, Map ID style, crossing markers + panel (desktop and mobile sheet), Place Autocomplete, "Use my location", and Google logo/terms not covered.
-4. **Session 05** (`prompts/sessions/SESSION_05_MAP_AND_LOCATION.md`):
+2. **Browser check with real keys** (owner): map, Map ID style, crossing markers + panel incl. live status fetch (desktop and mobile sheet), Place Autocomplete, "Use my location", and Google logo/terms not covered.
+3. **Session 05** (`prompts/sessions/SESSION_05_MAP_AND_LOCATION.md`):
    - a bbox/nearby crossing PostGIS query + JSON endpoint, for when the dataset outgrows the 5000 cap;
+   - colour pins by derived status via a bulk/bbox status endpoint (always with a label, never green for "no report");
    - an opt-in, session-scoped location flow.
 5. Then Session 06 (routing: provider abstraction, route ↔ crossing association, verified detours) and Session 07 (realtime + Celery). The closed-gate → reroute trigger the owner wants depends on both.
 6. Housekeeping:

@@ -31,7 +31,7 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 ## M3 — Incident intelligence
 - [x] Timestamped community reports.
 - [x] Expiry, duplicate handling and conflicting-report logic.
-- [~] Status freshness and confidence display (done on crossing detail page + JSON API; the map marker panel doesn't call the status API yet).
+- [~] Status freshness and confidence display (done on crossing detail page, JSON API and the map marker panel; browser marker-click not yet verified).
 - [ ] Route-aware incident evaluation.
 - [ ] Reroute prompt with accept/reject actions.
 

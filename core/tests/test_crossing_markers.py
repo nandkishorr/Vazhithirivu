@@ -86,6 +86,37 @@ class CrossingMarkerTests(TestCase):
         self.assertIn("data-crossing-osm-link", content)
         self.assertIn("https://www.openstreetmap.org/copyright", content)
         self.assertIn("No crossing selected", content)
+        self.assertIn(
+            'data-status-url-template="/api/crossings/0/status/"', content
+        )
+        self.assertIn('data-detail-url-template="/crossings/0/"', content)
+        for key in (
+            "closed_reported",
+            "open_reported",
+            "conflicting",
+            "stale",
+            "unknown",
+        ):
+            self.assertIn(f'data-status-variant="{key}"', content)
+        self.assertIn("data-status-summary", content)
+        self.assertIn("data-status-error", content)
+        self.assertIn("data-crossing-detail-link", content)
+        self.assertIn("Report or view details", content)
+
+    def test_status_endpoint_for_marker_crossing(self):
+        # The marker panel fetches /api/crossings/<id>/status/ for crossings
+        # listed in the home-page JSON — verify that endpoint works end to end.
+        from django.contrib.auth import get_user_model
+
+        from incidents.services import create_report
+
+        crossing = make_crossing(osm_id=40)
+        user = get_user_model().objects.create_user("marker-tester")
+        create_report(user, crossing, "closed")
+
+        response = Client().get(f"/api/crossings/{crossing.pk}/status/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"]["state"], "closed_reported")
 
     def test_no_crossings_keeps_import_empty_state(self):
         response = Client().get("/")

@@ -88,10 +88,164 @@
     const barrierEl = detailEl.querySelector("[data-crossing-barrier]");
     const coordsEl = detailEl.querySelector("[data-crossing-coords]");
     const osmLinkEl = detailEl.querySelector("[data-crossing-osm-link]");
+    const detailLinkEl = detailEl.querySelector("[data-crossing-detail-link]");
+    const summaryEl = detailEl.querySelector("[data-status-summary]");
+    const errorEl = detailEl.querySelector("[data-status-error]");
     const closeBtn = document.getElementById("crossing-close");
+    const statusUrlTemplate = detailEl.dataset.statusUrlTemplate;
+    const detailUrlTemplate = detailEl.dataset.detailUrlTemplate;
 
     window.vz.crossingMarkers = new Map();
     let selectedId = null;
+    let statusTimer = null;
+    let statusFetch = null;
+
+    const KNOWN_STATES = [
+      "closed_reported",
+      "open_reported",
+      "conflicting",
+      "stale",
+      "unknown",
+    ];
+
+    function urlFor(template, id) {
+      return template.replace(/\/0\/$/, "/" + encodeURIComponent(id) + "/");
+    }
+
+    function showStatusVariant(state) {
+      detailEl
+        .querySelectorAll("[data-status-variant]")
+        .forEach((el) => {
+          el.hidden = el.dataset.statusVariant !== state;
+        });
+    }
+
+    function reportAge(seconds) {
+      if (seconds === null || seconds === undefined) return "";
+      if (seconds < 60) return "just now";
+      if (seconds < 3600) return Math.round(seconds / 60) + " min ago";
+      return Math.round(seconds / 3600) + " h ago";
+    }
+
+    function pluralizeSay(n) {
+      return n === 1 ? "says" : "say";
+    }
+
+    function statusSummary(payload) {
+      const status = payload.status || {};
+      const policy = payload.policy || {};
+      const age = reportAge(status.last_report_age_seconds);
+      switch (status.state) {
+        case "unknown":
+          return (
+            "No community reports in the last " +
+            policy.stale_minutes +
+            " minutes."
+          );
+        case "stale":
+          return (
+            "Last report (" +
+            status.last_reported_state +
+            ") " +
+            age +
+            " — too old to rely on."
+          );
+        case "closed_reported":
+        case "open_reported": {
+          const n = status.supporting_reports || 0;
+          return (
+            "Last report " +
+            age +
+            " · based on " +
+            n +
+            " community report" +
+            (n === 1 ? "" : "s") +
+            "."
+          );
+        }
+        case "conflicting": {
+          const support = status.supporting_reports || 0;
+          const oppose = status.opposing_reports || 0;
+          const other =
+            status.last_reported_state === "closed" ? "open" : "closed";
+          return (
+            support +
+            " " +
+            pluralizeSay(support) +
+            " " +
+            status.last_reported_state +
+            ", " +
+            oppose +
+            " " +
+            pluralizeSay(oppose) +
+            " " +
+            other +
+            " in the last few minutes."
+          );
+        }
+        default:
+          return "";
+      }
+    }
+
+    function renderStatus(payload) {
+      const status = payload.status || {};
+      const state = KNOWN_STATES.includes(status.state)
+        ? status.state
+        : "unknown";
+      showStatusVariant(state);
+      if (summaryEl) summaryEl.textContent = statusSummary(payload);
+    }
+
+    function statusFailed() {
+      showStatusVariant("unknown");
+      if (summaryEl) summaryEl.textContent = "";
+      if (errorEl) errorEl.hidden = false;
+    }
+
+    function stopStatusRefresh() {
+      if (statusTimer !== null) {
+        clearInterval(statusTimer);
+        statusTimer = null;
+      }
+      if (statusFetch) {
+        statusFetch.abort();
+        statusFetch = null;
+      }
+    }
+
+    function loadStatus(id) {
+      if (!statusUrlTemplate) return;
+      if (statusFetch) statusFetch.abort();
+      const controller = new AbortController();
+      statusFetch = controller;
+      fetch(urlFor(statusUrlTemplate, id), {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      })
+        .then((response) => {
+          if (!response.ok) throw new Error("status " + response.status);
+          return response.json();
+        })
+        .then((payload) => {
+          if (selectedId !== id || controller.signal.aborted) return;
+          renderStatus(payload);
+        })
+        .catch((err) => {
+          if (err && err.name === "AbortError") return;
+          if (selectedId !== id) return;
+          statusFailed();
+        });
+    }
+
+    function startStatusRefresh(id) {
+      stopStatusRefresh();
+      statusTimer = setInterval(() => {
+        if (document.hidden || selectedId !== id) return;
+        loadStatus(id);
+      }, 60000);
+    }
 
     function setSelected(id) {
       if (selectedId !== null) {
@@ -138,9 +292,19 @@
           osmLinkEl.hidden = true;
         }
       }
+      if (detailLinkEl && detailUrlTemplate) {
+        detailLinkEl.href = urlFor(detailUrlTemplate, c.id);
+      }
+      showStatusVariant("unknown");
+      if (summaryEl) {
+        summaryEl.textContent = "Checking recent community reports…";
+      }
+      if (errorEl) errorEl.hidden = true;
       if (emptyEl) emptyEl.hidden = true;
       detailEl.hidden = false;
       setSelected(c.id);
+      startStatusRefresh(c.id);
+      loadStatus(c.id);
       detailEl.focus();
       if (window.vz.expandSheet) window.vz.expandSheet();
     }
@@ -149,6 +313,7 @@
       detailEl.hidden = true;
       if (emptyEl) emptyEl.hidden = false;
       setSelected(null);
+      stopStatusRefresh();
     }
 
     if (closeBtn) closeBtn.addEventListener("click", hideDetail);
