@@ -3,8 +3,147 @@
 > This file is the handoff point between agent sessions. Update it at the end of every meaningful work session.
 
 ## Status
-- Current milestone: **Session 09 (click-to-route UX) implemented, uncommitted, 2026-10-25.** Map-click destinations, dynamic reroute via `?format=json`, A/B endpoint pins, bolder route line, default "My location" origin with alert-style location UI.
-- Git: `main` = Session 07 commit (`962eaa5`, 4 unpushed commits) + uncommitted Session 08 + 09 tree. Branch `wip/crossing-labels` still incomplete — don't merge.
+- Current milestone (uncommitted, 2026-10-25): **Session 14 (static simulated users + auto-selected verified detour, ADR-021)** — verified: 332 tests green, live sim smoke (parked users → dwell prompt → confirm → `closed_simulated` → same-line `closed_inferred` → `selected:"r1"` detour) green.
+- Previous milestone (uncommitted): **Session 13 (same-line status propagation + via-point detour synthesis, ADR-020)** — verified (332 tests). Earlier uncommitted Sessions 10/10b/11/12 sit underneath in the same tree.
+- Docs session (2026-10-25): **`README.md` rewritten** — was the dev-bundle description; now documents the real architecture (data planes, status pipeline, verified routing, simulator, privacy model, API surface) plus a full setup guide (all env keys, Google Cloud steps, every command). Docs-only change.
+- Git: `main` = `8bac7a5` (Sessions 08+09 committed). Branch `wip/crossing-labels` still incomplete — don't merge.
+
+## What changed — Session 14 (uncommitted; ADR-021)
+- **Static simulated users — no moving vehicles** (owner request). `simulator/engine.py`: `spawn_vehicles` now parks *every* `--vehicles` user in a queue slot on an approach to a gated crossing (round-robin across gates, alternating sides, `SIM_QUEUE_GAP_M`/`SIM_QUEUE_SPACING_M` + jitter; seeded random crossing when no gate is scheduled). `_advance_vehicles` (movement, queue clamping, path bounce) replaced by `_update_dwell`: a parked user counts `waiting`+`wait_ticks` only while its crossing's gate is physically closed; both clear on open. `_gate_specs_by_crossing` deleted; `speed_mps` stored as 0; `path`/`progress_m`/`direction` kept as placement geometry — **no migration** (`SimulatedVehicle` name/fields unchanged; "vehicle" is historical). The ADR-018 prompt → confirm → `SimulationGateEvent` flow is untouched.
+- **Dead config removed**: `SIM_VEHICLE_MIN_SPEED_MPS`, `SIM_VEHICLE_MAX_SPEED_MPS`, `SIM_QUEUE_VEHICLES` from `config/settings/base.py`, `simulator/checks.py` (`simulator.E003` deleted, E004 trimmed), `.env.example`. Stale `.env` keys are ignored harmlessly.
+- **Auto-selected verified detour** (owner request: "route [should avoid] the closed gates"). `routing/services.py`: `RoutePlan.preferred_route_id` = first `verified` alternative when the primary is blocked, else `"r0"`. `core/views.py` `_route_data` adds `"selected"`. `templates/routing/_route_plan.html`: "Recommended" badge, `aria-pressed`/`data-selected` and the visible panel now follow the preferred route; a blocked primary is tagged "Closed gate on/near route". `static/js/map.js` `applyRouteData` honours `data.selected` (validated, falls back to `"r0"`) via `selectRoute`.
+- **Copy**: map.js sim banner + marker title say "simulated users"; `simulator/views.py` disclaimer and the `simulator` command help/output say users not vehicles; `simulator/admin.py` list shows `crossing`/`waiting` instead of `speed_mps`/`direction`.
+- **Tests**: `simulator/tests/test_engine.py` — `test_users_never_move` (replaces position-advance/bounce tests), `test_users_park_near_gated_crossing`, `test_gate_close_waits_users_then_prompt_confirm_open`, `test_dwell_counter_resets_when_gate_reopens` (replaces queue-clamp test). `routing/tests/test_services.py` + `routing/tests/test_views.py` — `preferred_route_id`/`"selected"`/hidden-panel assertions.
+
+## Commands/tests run (Session 14, actual outcomes)
+| Command | Result |
+|---|---|
+| `node --check static/js/map.js` | OK |
+| `docker compose run --rm web python manage.py check` | No issues (0 silenced) |
+| `docker compose run --rm web python manage.py test --settings=config.settings.test` | **Ran 332 tests, OK** |
+| `simulator start --vehicles 8 --seed 42 --gate 8:2:12` + `/api/simulation/` | 8 parked users at crossing 8, `wait:false`, `gates:{}` |
+| `simulator tick` ×2 | gate closed at tick 2: all 8 `wait:true`; positions byte-identical across ticks 2→5 (zero moved); status still unsurfaced |
+| `simulator tick --n 3` | prompt #4 pending at tick 5 (`waiting_users: 4` inside the 20 m dwell radius) |
+| `POST /api/simulation/prompts/4/confirm/` | `confirmed` + `gates{"8":"closed"}` → `/api/crossings/8/status/` = `closed_simulated` (run 7) |
+| `GET /?origin_lat…&destination_lat…&format=json` ×3 | routes through the area flag `closed_inferred` crossing 123 (same-line propagation from crossing 8's confirmed closure); the blocked route with a verified alternative returns `"selected":"r1"` — detour auto-selected |
+| `simulator tick --n 7` | reopen at tick 12 → auto `open` → `open_simulated`; all `wait` cleared, users still parked |
+| `simulator stop` + `reset` | 216 sim rows deleted; crossing 8 → `unknown`, `simulated:false`; `/api/simulation/` `active:false`; simulator service restarted |
+
+Not verified: auto-selected detour and static pins in a real browser (markup/JSON/curl-verified only); prompt card click path unchanged from Session 10.
+
+> **Demo run left active (2026-10-25)**: run #8 `Sim run 7` — 16 static users parked 4-per-gate at crossings **107 (Malabar Gate, 9.93665, 76.27533), 15, 29, 127** (same railway line, staggered close ticks 2/6/10/14). All four confirmed → `closed_simulated`; all 16 users `waiting`. Gates stay closed for the 900 s duration — stop with `manage.py simulator stop`, then `simulator reset` clears all sim rows and reverts statuses.
+
+## What changed — Session 13 (uncommitted; ADR-020)
+- **Same-line propagation** (owner request: "up to 3 crosses in the same line"): new `railways.CrossingLink` (migration `0002`) stores each crossing's ≤`RAILWAY_LINK_MAX_NEIGHBORS` (3) nearest crossings measured along the connected track network. `railways/topology.py` `rebuild_crossing_links` builds a vertex/edge graph from active track ways (shared snapped vertices = junctions), snaps each crossing to the nearest vertex ≤`RAILWAY_LINK_SNAP_M` (30 m), Dijkstra capped at `RAILWAY_LINK_MAX_DISTANCE_M` (15 km); `manage.py link_crossings` + auto-rebuild at end of `import_osm_railways`; read-only admin; `railways.E001`. On the real Kochi import: 99/127 crossings linked, 297 links, 28 unsnapped.
+- **Inferred states**: `incidents.services` gains `closed_inferred`/`open_inferred` + `STATUS_META`; `effective_statuses` propagates a live `closed`/`open` (`*_reported` or `*_simulated`) to linked neighbours — one hop only, only onto `unknown`/`stale` targets, closed beats open, suppressed/inactive sources excluded; `EffectiveStatus.inference` carries provenance. `derive_statuses` stays community-only. Payloads expose `inferred`/`inference`; `signals._publish` republishes neighbour `crossing.<pk>` groups on report writes.
+- **UI**: badges + legend entries + `data-status-variant` spans (ui.py `link` icon; red likely-closed, teal likely-open); map.js pin styles (`≈` glyph on reported colours), `KNOWN_STATES`, status summary naming the source crossing, marker titles, route-crossing labels; `NAV_ALERT_STATES`/`ALERT_STATES` + `BLOCKING_STATES` include `closed_inferred` — journey popup and pre-nav confirm show "likely closed (same line)" wording; `crossing_detail.html` links to the source crossing.
+- **Detour synthesis** (owner report: no alternatives for a custom source — Google returned one route): `providers.Waypoint.via` + `compute_routes(..., intermediates=)`; when `blocking` and exactly one route came back, `plan_route` synthesizes ≤`ROUTE_DETOUR_MAX_CALLS` (2) candidates through a `via` waypoint offset `ROUTE_DETOUR_VIA_OFFSET_M` (300 m) perpendicular to the route at the blocking crossing. Each call consumes `allow_request`; identical geometries deduped; candidates marked `synthesized` + "Detour via side roads"; identical verification — a detour that still passes is `passes`, never "avoids". `ROUTE_DETOUR_ENABLED` switch, `routing.E003`. Route options/panels tag "detour suggestion"/"Suggested detour".
+- **Custom-source fix**: `syncRouteFields()` (map.js) syncs typed-but-unselected picker text into the hidden `origin`/`destination` fields on form submit AND every dynamic path (`reroute()`, `openInGoogleMaps`) — previously only "My location"/picked places worked outside submit. A custom source clears stale my-location coords so the server can't prefer them over the typed address.
+- **Honesty**: `blocking_word` (reported/simulated/likely-closed) parameterizes verification text; `RoutePlan.blocking_all_inferred`; "Crossing likely closed on your route (same line)" title when all blocking entries are inferred; `counts` renders "(inferred)".
+- **Tests**: `railways/tests/test_topology.py` (8), `incidents/tests/test_propagation.py` (12), `DetourSynthesisTests` (5); `intermediates` param added to all FakeProviders; `inferred` key added to the map-api payload test.
+
+## Commands/tests run (Session 13, actual outcomes)
+| Command | Result |
+|---|---|
+| `node --check static/js/map.js` | OK |
+| `docker compose run --rm web python manage.py makemigrations` | `railways.0002_crossinglink` created |
+| `... manage.py migrate` + `check` | applied; no issues (0 silenced) |
+| `... manage.py test --settings=config.settings.test` | **Ran 332 tests, OK** (interim failures all fixed) |
+| `... manage.py link_crossings` (dev DB, real Kochi data) | `linked=99 links=297 unsnapped=28 tracks=330` |
+| Live shell: temp closed report on crossing 123 → `effective_status(8)` | `closed_inferred` + inference `{from: 123, 464.8 m, closed_reported}`; rows cleaned up |
+| `... tailwind tailwindcss -i … -o static/css/app.css --minify` | Done (teal badge classes present) |
+
+Not verified: inferred pins/alerts and detour cards in a real browser; a live Google via-point call (synthesis is mocked in tests).
+
+## What changed — Session 12 (Google sign-in, ADR-019; uncommitted)
+- **`django-allauth==65.20.0` + `requests==2.34.2`** added to `requirements/base.txt` (requests is an undeclared allauth dependency — pinned explicitly).
+- **`config/settings/base.py`**: env vars `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`/`EMAIL_BACKEND`; apps `allauth`, `allauth.account`, `allauth.socialaccount`, `allauth.socialaccount.providers.google`; `allauth.account.middleware.AccountMiddleware`; `AUTHENTICATION_BACKENDS`; `SOCIALACCOUNT_PROVIDERS["google"]` (scope profile+email, `APP` attached only when both creds set); `SOCIALACCOUNT_EMAIL_AUTHENTICATION` + `_AUTO_CONNECT` (verified-email link to existing accounts); `ACCOUNT_ADAPTER="core.adapters.AccountAdapter"`; `GOOGLE_OAUTH_ENABLED` flag.
+- **`core/adapters.py`**: local username/password signup closed (Google self-registers; admin-created accounts keep working).
+- **`core/context_processors.py`**: `GOOGLE_OAUTH_ENABLED` for the login button. **`core/checks.py`**: `core.W003` when only one OAuth credential is set.
+- **`config/urls.py`**: `accounts/` → `include("allauth.urls")` mounted *after* our `login`/`logout` so the Tailwind page keeps winning `/accounts/login/`; gives `/accounts/google/login/` (POST → Google), `/accounts/google/login/callback/`, plus allauth account URLs (`account_signup` renders our styled closed page; password reset etc. available).
+- **Templates**: `registration/login.html` Google button (POST, official G mark, `{% provider_login_url %}` carries `next`); styled overrides `socialaccount/login.html` (GET confirm), `login_cancelled.html`, `login_error.html`, `account/signup_closed.html`.
+- **`config/settings/dev.py`**: console `EMAIL_BACKEND`. Docs: `.env.example` (OAuth setup + callback URI), `RUNBOOK.md` (Google sign-in section), `DATA_SOURCES.md` (scopes; tokens not stored), `DECISIONS.md` ADR-019.
+- **Tests**: `core/tests/test_google_auth.py` (10): button shown/hidden, password login intact, POST→Google 302 (client_id/callback/state/scope), GET confirm page, `next` propagation, callback rejects missing state (401/302, not 500), signup closed + POST creates no user, `account_login` name resolves.
+
+## Commands/tests run (Session 12, actual outcomes)
+| Command | Result |
+|---|---|
+| `docker compose build web` | OK (allauth 65.20.0 + requests 2.34.2 installed) |
+| `docker compose run --rm web python manage.py migrate` | account 0001–0009 + socialaccount 0001–0006 applied |
+| `docker compose run --rm web python manage.py check` | No issues (0 silenced) |
+| `docker compose run --rm tailwind tailwindcss -i … --minify` | Done |
+| `python manage.py test --settings=config.settings.test` | 307 tests: **1 failure + 13 errors — all from the parallel session's in-flight crossing-links/line-inference WIP** (`railways.test_import` ×13: missing `RAILWAY_LINK_*` settings; `test_map_api` payload expects `inferred` key). All 10 `test_google_auth` + all auth tests pass. |
+| Live `curl /accounts/login/` (no creds) | 200, Google button hidden, admin note shown |
+| Live `curl /accounts/signup/` | 200, styled "Signup closed" |
+| One-off container `GOOGLE_OAUTH_CLIENT_ID/SECRET=dummy` + Django `Client` | button renders; POST `/accounts/google/login/` → 302 `accounts.google.com/o/oauth2/v2/auth` with correct client_id, callback `…/accounts/google/login/callback/`, state |
+
+Not verified: a real Google consent→callback→user-creation roundtrip (needs Cloud Console OAuth client creds — see RUNBOOK "Google sign-in"); `GET/POST /accounts/google/login/` with no creds returns 500 `ImproperlyConfigured` (standard allauth for an unconfigured provider; the button is never shown, so the URL is undiscoverable).
+
+> **ADR number collision**: the parallel crossing-links session also labels its work ADR-019 (see `railways/topology.py`); whichever lands DECISIONS.md second should renumber to ADR-020.
+
+## What changed — Session 11 (uncommitted)
+- **`static/js/map.js`**: crossing markers are now a level-crossing warning sign instead of a generic `PinElement` glyph pin — `crossingSignSvg` builds the inline SVG (status-coloured diamond band + rim, white field, dark road/track pictogram, ground shadow, corner badge keeping the glyph as the non-colour status cue), `crossingIconUrl` encodes the same SVG as a data URI for the legacy (no Map ID) `Marker` path, `crossingSignEl` wraps it for `AdvancedMarkerElement.content` with `anchorLeft`/`anchorTop` on the diamond tip; selected state = CSS scale 1.18 around the tip. Route-closure mini-markers (`addRouteCrossingMarkers`) use the same icon at 0.78 scale. `LEGACY_ICON_SCALE` removed; `STATE_STYLE` colours/glyphs unchanged (`border` is now the band rim).
+- **`templates/core/home.html`**: legend note explaining the sign markers.
+- Verified by rendering the real `crossingSignSvg` output via headless Chrome (all 7 states + scale/selected variants). Not yet seen on a live Google Map — confirm tip anchoring and badge overlap in a browser.
+
+## Commands/tests run (Session 11, actual outcomes)
+| Command | Result |
+|---|---|
+| `node --check static/js/map.js` | OK |
+| `docker compose run --rm web python manage.py check` | No issues (0 silenced) |
+| `docker compose run --rm web python manage.py test --settings=config.settings.test` | **Ran 297 tests, OK** |
+| `curl /` | 200; legend sign-marker line present |
+
+## What changed — Session 10b (uncommitted; ADR-017, navigation app)
+- **`navigation` app**: `JourneySession` — UUID capability token (`created_at`/`ended_at`/`last_position_check_at`; **no coordinates, route content or user identity**). `POST /api/navigation/sessions/` (per-client throttle `NAV_MAX_SESSIONS_PER_HOUR` → 429), `POST …/<uuid>/position/` `{lat,lng}` → nearby crossings + `alerts` (blocking `closed_reported`/`closed_simulated` inside `NAV_ALERT_RADIUS_M`), `POST …/<uuid>/end/` (idempotent). Session TTL `NAV_SESSION_MAX_HOURS` (ended/expired → 410); `NAV_MIN_UPDATE_SECONDS` → 429 `too_fast` + `Retry-After`. CSRF kept (`@ensure_csrf_cookie` on home + `X-CSRFToken`); positions are transient — never stored (tested: schema has no coord columns). `purge_navigation_sessions --days` retention command; view-only admin; `navigation.E001/E002` checks; `railways.queries.crossings_near_point` (raw SQL geography, nearest-first, capped).
+- **Frontend** (`map.js` `setupJourney`): route panels gain "Start journey — watch for closed gates" (`watchPosition` opt-in, teal marker w/ heading arrow, throttled checks by server `config`, red popup listing closed gates + "on your route" tags, dismiss suppressed until it leaves the radius/status changes) and "Open in Google Maps" (`maps/dir/?api=1` universal URL — place ids or opted-in coords; Google picks its own path). A pre-navigation warning card lists blocking crossings before either action. `home.html`: `#journey-banner`, `#journey-alert`, `#journey-confirm`; `map_config` gains `navigationStartUrl`/`navigationSessionUrlTemplate`; two new Lucide icons (`navigation`, `external-link`).
+- **Cross-session note**: the parallel Session-10 session generated `navigation/migrations/0001_initial.py` and fixed `core/views.py`'s placeholder UUID + `services.get_session` (returns `None` on malformed UUID).
+- **Tests**: `navigation/tests/` (27: API lifecycle/alerts/throttle/410s/privacy, services, checks, purge) + `crossings_near_point` in `railways/tests/test_queries.py` + template/config assertions in `routing`/`core` tests.
+
+## Commands/tests run (Session 10b, actual outcomes)
+| Command | Result |
+|---|---|
+| `node --check static/js/map.js` | OK |
+| `docker compose run --rm web python manage.py migrate` + `check` | `navigation.0001_initial` applied; no issues |
+| `docker compose run --rm web python manage.py test --settings=config.settings.test` | **Ran 297 tests, OK** (includes both sessions) |
+| `docker compose run --rm tailwind tailwindcss -i … -o static/css/app.css --minify` | Done |
+| Live: `POST /api/navigation/sessions/` (csftoken cookie + header) | 201 session+config |
+| Live: `POST …/position/` `{lat:9.9312,lng:76.2673}` | 200 `crossings:[]`, radii + disclaimer |
+| Live: position POST without CSRF / after `end/` | 403 / `410 session_ended` |
+| `curl /` | journey markup + nav URLs present |
+
+Not verified: journey mode in a real browser (watchPosition, popup, banner, Google-Maps handoff, pre-nav warning); `watchPosition` needs HTTPS/localhost.
+
+## What changed — Session 10 (uncommitted; ADR-018)
+- **Physical vs surfaced**: `--gate ID:CLOSE[:OPEN]` no longer writes `SimulationGateEvent` on schedule — it queues simulated users. A gate event (what the status overlay reads) is written only by a *confirmed* prompt, or automatically `open` when a physically reopened gate had a confirmed closure.
+- **`SimulatedVehicle`** (`migrations/0002`): `crossing`/`crossing_progress_m` (every vehicle's path crossing), `waiting`/`wait_ticks` (queue state). `SIM_QUEUE_VEHICLES` (4) staged users spawn queued per gated crossing, alternating sides; passers-by are clamped into queues at `SIM_QUEUE_GAP_M`/`SIM_QUEUE_SPACING_M` slots.
+- **`SimulationPrompt`** (new model): one per run+crossing+`truth_close_tick`; states pending/confirmed/dismissed/expired; `waiting_vehicle_indexes` snapshot.
+- **Engine**: `gate_truth()`, `_advance_vehicles` (queue clamp + staged hold + release on reopen), `_detect_prompts` (`SIM_DWELL_RADIUS_M`/`SIM_DWELL_SECONDS`/`SIM_DWELL_MIN_USERS`), `confirm_prompt`/`dismiss_prompt`, TTL (`SIM_PROMPT_TTL_SECONDS`) + reopen + run-end expiry, `auto_confirm` run flag (`--auto-confirm` CLI).
+- **API/WS**: `POST /api/simulation/prompts/<id>/confirm|dismiss/` (csrf_exempt — sim rows only); `prompts` in `/api/simulation/` + `sim.snapshot`/`sim.tick`; `sim.prompt`/`sim.prompt.resolved` on `sim.control`.
+- **Frontend**: `#sim-prompts` card stack under the banner (confirm/dismiss buttons → POST payload URLs); waiting users get darker pins; poll path carries prompts.
+- **Settings**: `SIM_DWELL_RADIUS_M`(20)/`SIM_DWELL_SECONDS`(20)/`SIM_DWELL_MIN_USERS`(1)/`SIM_PROMPT_TTL_SECONDS`(180)/`SIM_QUEUE_GAP_M`(7)/`SIM_QUEUE_SPACING_M`(8)/`SIM_QUEUE_VEHICLES`(4); `simulator.E004`; `.env.example`.
+- **Cross-session fixes I made** (parallel session's WIP, needed for a green suite): `core/views.py` placeholder UUID was malformed (`NoReverseMatch` 500 on `/`) → valid nil UUID; generated `navigation/migrations/0001_initial.py` (missing → `navigation_journeysession` table absent in tests); `navigation/services.get_session` returned `ValidationError` on malformed UUID → returns `None` (matches its own test).
+
+## Commands/tests run (Session 10, actual outcomes)
+| Command | Result |
+|---|---|
+| `node --check static/js/map.js` | OK |
+| `docker compose run --rm web python manage.py makemigrations simulator` | `0002` created; `migrate` applied |
+| `docker compose run --rm web python manage.py check` | No issues (0 silenced) |
+| `docker compose run --rm web python manage.py test --settings=config.settings.test` | **Ran 297 tests, OK** (263 + 34 nav tests from parallel session; interim failures all fixed) |
+| `simulator start --vehicles 20 --seed 42 --gate 8:1:40` + `/api/simulation/` | tick 8: 4 waiting users, prompt #1 pending at tick 4, `gates: {}` (unsurfaced) |
+| `POST /api/simulation/prompts/1/confirm/` | 200 `confirmed` + `gates{"8":"closed"}` → `/api/crossings/8/status/` = `closed_simulated` |
+| `simulator stop` + `reset` + status check | overlay reverted (`unknown`, `simulated:false`); 28 sim rows deleted (incl. prompt) |
+
+Not verified: prompt card UI in a real browser (markup/JS unit-pathed only); `sim.prompt` frames in a real browser; auto-reopen live (unit-tested); route replan through a confirmed-closed crossing in a real browser (unit-tested via `test_routing.py`).
+
+## Next steps (priority order)
+1. **Browser-verify the Session-14 demo loop**: `simulator start --vehicles 8 --gate <id>:2:60` → parked violet users darken when the gate closes → prompt card → Confirm → crossing `closed_simulated` (+ same-line `closed_inferred`) → Find route → verified detour is auto-selected (still curl-/unit-verified only).
+2. **Google sign-in**: owner creates an OAuth Web client in Cloud Console (`<origin>/accounts/google/login/callback/` redirect URI, RUNBOOK "Google sign-in"), sets `GOOGLE_OAUTH_CLIENT_ID`/`SECRET` in `.env`, then browser-verify the full consent→callback→login roundtrip.
+3. Browser-verify journey mode (Start → watchPosition → closed-gate popup → End; also the Google-Maps handoff and pre-nav warning) and the sim prompt card — both are unit-/curl-verified only.
+4. Commit the uncommitted sessions once the owner confirms and the suite is green again.
+5. Browser smoke: WS pin recolour on `crossing.status` push (still never exercised in a real browser).
+6. Finish `wip/crossing-labels` branch (needs migration `0002`, tests, rerun of the importer).
 
 ## What exists now — Session 09 (uncommitted; ADR-016)
 - **Click-to-route**: `map.js` `setupRoutes` rewritten — `map` `click` listener routes to a POI (`placeId`, `event.stop()` suppresses the info window) or any point. `resolveDestination` reverse-geocodes the click (Geocoding API: `placeId` for POIs, `location` for bare clicks) so the destination is a real selectable Google place/address; falls back to "Selected place"/"Pinned location (lat, lng)" when geocoding is unavailable. **Browser key now also needs the Geocoding API** (RUNBOOK/DATA_SOURCES/.env.example updated). `disableDoubleClickZoom: true` (dblclick fires two clicks). Crossing detail card gains `#crossing-route-here` → routes to crossing coords. "Route here"/map clicks go through `ensureOriginThen`: picked place/typed text wins; "My location" or empty From → `window.vz.requestMyLocation` first, reroute on fix.
@@ -298,11 +437,10 @@ Not run: browser rendering with real Google keys (none configured), device/visua
 - Test settings still read `.env`. Any test that depends on blank keys must override settings explicitly.
 
 ## Next steps
-1. **Owner: review and commit Sessions 08+09 (and push `main`** — Sessions 05–07 already committed locally, 4 unpushed commits + this tree).
-2. **Owner: browser smoke with real keys** — click a POI and an empty spot → dynamic reroute; "Route here" on a crossing; A/B pins + casing; "My location" default + permission alert flow; then the sim checklist from Session 08.
-3. Live-verify the demo flow end-to-end: plan a route through a simulated-closed crossing → warning + verified alternative card.
-4. Find a Kochi route pair with a real `on_route` match + Google alternative; verify the `verified` card live; tune 20/50/30/100 m thresholds.
-5. Add a JS check to CI: at least `node --check static/js/*.js`, ideally a Playwright smoke (marker diffing, route switching, dynamic reroute, WS handling incl. sim ticks).
-6. **Finish crossing labels** from `wip/crossing-labels` (8-step plan in this file), then surface `label` in bbox payload, panel, route list.
-6. M4 remainder: session-scoped server-side location only when navigation/alerts need it; stays browser-only until then (ADR-012). M5 (simulator) can reuse `crossing.<pk>` push groups + `source` flags — keep simulated statuses labelled and separate.
-7. Housekeeping: Google sign-in; schedule `purge_crossing_reports`; JSON 403 for API CSRF failures; ruff; slim Dockerfile.
+1. **Owner: review and commit the uncommitted stack** — Sessions 10–13 are green together (332 tests) and `main` has unpushed commits.
+2. **Browser-verify Session 13**: report a crossing closed → neighbour pins flip to "likely closed" live (WS republish); detail card shows the source-crossing link; journey alert + pre-nav confirm wording; then a blocked route with a custom source → "detour suggestion" card appears (live Google via call — mocked tests only so far).
+3. Tune propagation knobs on real data: 28/127 Kochi crossings are unsnapped (>30 m from a track vertex — mostly crossings on ways outside the imported bbox edge); consider whether `RAILWAY_LINK_MAX_NEIGHBORS=3`/`RAILWAY_LINK_MAX_DISTANCE_M=15000` produce sensible maps.
+4. **Owner: browser smoke with real keys** — click a POI and an empty spot → dynamic reroute (now also with a typed custom source); "Route here" on a crossing; "My location" default + permission alert flow; then the sim checklist from Session 08.
+5. Find a Kochi route pair with a real `on_route` match + Google alternative; verify the `verified` card live; tune 20/50/30/100 m thresholds and `ROUTE_DETOUR_VIA_OFFSET_M` (300 m may under-shoot dense city grids).
+6. Add a JS check to CI: at least `node --check static/js/*.js`, ideally a Playwright smoke.
+7. **Finish crossing labels** from `wip/crossing-labels` (8-step plan in this file), then surface `label` in bbox payload, panel, route list — labels would make `inference.from_name` useful instead of "a crossing".
