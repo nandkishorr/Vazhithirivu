@@ -6,6 +6,7 @@
 - Current milestone (uncommitted, 2026-10-25): **Session 14 (static simulated users + auto-selected verified detour, ADR-021)** — verified: 332 tests green, live sim smoke (parked users → dwell prompt → confirm → `closed_simulated` → same-line `closed_inferred` → `selected:"r1"` detour) green.
 - Previous milestone (uncommitted): **Session 13 (same-line status propagation + via-point detour synthesis, ADR-020)** — verified (332 tests). Earlier uncommitted Sessions 10/10b/11/12 sit underneath in the same tree.
 - Docs session (2026-10-25): **`README.md` rewritten** — was the dev-bundle description; now documents the real architecture (data planes, status pipeline, verified routing, simulator, privacy model, API surface) plus a full setup guide (all env keys, Google Cloud steps, every command). Docs-only change.
+- Docs session (2026-10-25, follow-up): **screenshots added to `README.md`** — `assets/screenshots/app-route-planning.png` + `route-map.png` in a two-column "Screenshots" section after "What it does". Docs-only change; no tests run.
 - Git: `main` = `8bac7a5` (Sessions 08+09 committed). Branch `wip/crossing-labels` still incomplete — don't merge.
 
 ## What changed — Session 14 (uncommitted; ADR-021)

@@ -8,6 +8,7 @@ whether an alternative route genuinely avoids it.
 ## Table of contents
 
 - [What it does](#what-it-does)
+- [Screenshots](#screenshots)
 - [Tech stack](#tech-stack)
 - [Architecture overview](#architecture-overview)
 - [The four data planes](#the-four-data-planes)
@@ -41,6 +42,12 @@ whether an alternative route genuinely avoids it.
   parked at a physically-closed gate → presence inference raises a confirmation
   prompt → a human confirms → the crossing shows "simulated closed" and routes
   replan around it.
+
+## Screenshots
+
+| Route planning UI | Planned route on the map |
+|---|---|
+| ![Vazhithirivu home — route planned through the Kochi demo area, with the crossing detail card, status legend and journey controls in the side panel](assets/screenshots/app-route-planning.png) | ![Close-up of the planned route A→B on the map, passing the level-crossing sign marker near Malabar Gate](assets/screenshots/route-map.png) |
 
 ## Tech stack
 
