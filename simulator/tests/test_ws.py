@@ -78,6 +78,43 @@ class ConsumerTests(TransactionTestCase):
         self.assertEqual(msg["run"]["id"], run.pk)
         await comm.disconnect()
 
+    async def test_prompt_broadcast_reaches_client(self):
+        run = await sync_to_async(engine.start_run)(
+            vehicles=8,
+            seed=33,
+            duration_seconds=600,
+            tick_seconds=5,
+            gates=[
+                {
+                    "crossing_id": self.crossing.pk,
+                    "close_tick": 1,
+                    "open_tick": None,
+                }
+            ],
+        )
+        comm = await self.connect()
+        await comm.send_json_to({"type": "subscribe"})
+        snapshot = await comm.receive_json_from(timeout=5)
+        self.assertEqual(snapshot["type"], "sim.snapshot")
+        self.assertEqual(snapshot["prompts"], [])
+        # Ticks queue the staged users; after SIM_DWELL_SECONDS worth of
+        # ticks the prompt is raised and broadcast.
+        for _ in range(4):
+            await sync_to_async(engine.tick_run)(run)
+        seen_prompt = False
+        for _ in range(6):
+            msg = await comm.receive_json_from(timeout=5)
+            if msg["type"] == "sim.prompt":
+                seen_prompt = True
+                self.assertEqual(
+                    msg["prompt"]["crossing_id"], self.crossing.pk
+                )
+                self.assertEqual(msg["prompt"]["state"], "pending")
+                self.assertTrue(msg["simulated"])
+                break
+        self.assertTrue(seen_prompt)
+        await comm.disconnect()
+
     async def test_invalid_messages(self):
         comm = await self.connect()
         for bad in ({"type": "nope"}, "x", {"type": "subscribe", "run_id": "a"}):

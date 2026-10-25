@@ -48,13 +48,19 @@ class FakeProvider:
     supports_exclusion = False
     calls = 0
 
-    def __init__(self, routes=(), error=None):
+    def __init__(self, routes=(), error=None, detours=()):
         self._routes = list(routes)
+        self._detours = list(detours)
         self._error = error
         FakeProvider.calls = 0
+        FakeProvider.detour_calls = 0
 
-    def compute_routes(self, origin, destination):
+    def compute_routes(self, origin, destination, intermediates=None):
         FakeProvider.calls += 1
+        if intermediates:
+            FakeProvider.detour_calls += 1
+            # Each via call returns the next queued detour, then [].
+            return [self._detours.pop(0)] if self._detours else []
         if self._error:
             raise self._error
         return list(self._routes)
@@ -100,6 +106,7 @@ class PlanRouteTests(TestCase):
         self.assertTrue(plan.ok)
         self.assertIsNone(plan.warning_level)
         self.assertEqual(plan.blocking, ())
+        self.assertEqual(plan.preferred_route_id, "r0")
         primary = plan.routes[0]
         self.assertEqual(primary.counts.get("unknown"), 1)
         for route in plan.routes[1:]:
@@ -120,6 +127,8 @@ class PlanRouteTests(TestCase):
         self.assertEqual(alt.verification, "verified")
         self.assertTrue(plan.has_verified_alternative)
         self.assertGreater(alt.avoided_clearance_m, 100)
+        # The verified detour is the route shown first (ADR-021).
+        self.assertEqual(plan.preferred_route_id, "r1")
 
     def test_alternative_through_crossing_passes(self):
         self._closed_report()
@@ -129,6 +138,7 @@ class PlanRouteTests(TestCase):
         plan = self._plan(provider)
         self.assertEqual(plan.routes[1].verification, "passes")
         self.assertFalse(plan.has_verified_alternative)
+        self.assertEqual(plan.preferred_route_id, "r0")
 
     def test_missing_distance_is_unverifiable_not_verified(self):
         """A blocking crossing with no measured distance fails closed."""
@@ -233,3 +243,95 @@ class PlanRouteTests(TestCase):
         ) as mock_derive:
             self._plan(provider)
             self.assertEqual(mock_derive.call_count, 1)
+
+
+class DetourSynthesisTests(TestCase):
+    """Single blocked route → via-point detour candidates (ADR-020)."""
+
+    def setUp(self):
+        cache.clear()
+        User = get_user_model()
+        self.user = User.objects.create_user("reporter", password="x")
+        self.crossing = RailwayCrossing.objects.create(
+            location=Point(LNG, LAT, srid=4326),
+            railway_value="level_crossing",
+            source="manual",
+            name="Main crossing",
+        )
+        RailwayTrack.objects.create(
+            geometry=ns(), railway_value="rail", source="manual"
+        )
+        self.origin = Waypoint(address="a")
+        self.destination = Waypoint(address="b")
+        self._patcher = patch("routing.providers.get_provider")
+        self.mock_get_provider = self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+        now = timezone.now()
+        CrossingReport.objects.create(
+            crossing=self.crossing,
+            reported_state=CrossingReport.STATE_CLOSED,
+            reporter=self.user,
+            created_at=now,
+            expires_at=now + timedelta(minutes=15),
+        )
+
+    def _plan(self, provider):
+        self.mock_get_provider.return_value = provider
+        return plan_route(self.origin, self.destination, "client-1")
+
+    def test_detour_synthesized_and_verified(self):
+        # Detour ~150 m north of the blocked crossing (clearance > 100 m).
+        provider = FakeProvider(
+            [candidate(0, ew())],
+            detours=[candidate(9, ew(0.00135))],
+        )
+        plan = self._plan(provider)
+        self.assertTrue(plan.ok)
+        # Two via points (both sides of the route); the second call is
+        # skipped since its identical geometry is deduped.
+        self.assertGreaterEqual(FakeProvider.detour_calls, 1)
+        self.assertEqual(len(plan.routes), 2)
+        alt = plan.routes[1]
+        self.assertTrue(alt.candidate.synthesized)
+        self.assertEqual(alt.verification, "verified")
+        self.assertEqual(alt.candidate.description, "Detour via side roads")
+        self.assertTrue(plan.has_verified_alternative)
+        self.assertEqual(plan.preferred_route_id, "r1")
+
+    def test_detour_that_still_passes_is_not_offered(self):
+        provider = FakeProvider(
+            [candidate(0, ew())], detours=[candidate(9, ew(0.00005))]
+        )
+        plan = self._plan(provider)
+        self.assertEqual(plan.routes[1].verification, "passes")
+        self.assertFalse(plan.has_verified_alternative)
+
+    def test_no_detour_calls_when_alternatives_exist(self):
+        provider = FakeProvider(
+            [candidate(0, ew()), candidate(1, ew(0.00135), labels=())]
+        )
+        plan = self._plan(provider)
+        self.assertEqual(FakeProvider.detour_calls, 0)
+        self.assertEqual(len(plan.routes), 2)
+
+    @override_settings(ROUTE_DETOUR_ENABLED=False)
+    def test_detour_disabled(self):
+        provider = FakeProvider(
+            [candidate(0, ew())], detours=[candidate(9, ew(0.00135))]
+        )
+        plan = self._plan(provider)
+        self.assertEqual(FakeProvider.detour_calls, 0)
+        self.assertEqual(len(plan.routes), 1)
+
+    def test_detour_calls_are_throttled(self):
+        provider = FakeProvider(
+            [candidate(0, ew())], detours=[candidate(9, ew(0.00135))]
+        )
+        # Exhaust the per-client budget first; the main call still runs
+        # (it consumed slot 1) but detour calls are skipped.
+        with patch(
+            "routing.services.allow_request", return_value=False
+        ) as mock_allow:
+            plan = self._plan(provider)
+        self.assertEqual(plan.error, "rate_limited")
+        self.assertEqual(FakeProvider.detour_calls, 0)

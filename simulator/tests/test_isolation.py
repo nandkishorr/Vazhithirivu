@@ -4,7 +4,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import LineString, Point
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from incidents.models import CrossingReport
@@ -18,6 +18,7 @@ from simulator.models import (
     SimulatedVehicle,
     SimulationEvent,
     SimulationGateEvent,
+    SimulationPrompt,
     SimulationRun,
 )
 
@@ -69,6 +70,7 @@ class IsolationTests(TestCase):
             "crossing_row": RailwayCrossing.objects.get(pk=self.crossing.pk),
         }
 
+    @override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
     def test_run_writes_no_community_reports(self):
         before = self._snapshot_real_data()
         run = engine.start_run(
@@ -85,6 +87,10 @@ class IsolationTests(TestCase):
         )
         engine.tick_run(run)
         engine.tick_run(run)
+        # Even the presence-inference path — prompt + confirm — stays
+        # inside simulator-owned tables.
+        prompt = SimulationPrompt.objects.get()
+        engine.confirm_prompt(prompt)
         engine.stop_run(run)
         after = self._snapshot_real_data()
         self.assertEqual(before["reports"], after["reports"])
@@ -103,6 +109,7 @@ class IsolationTests(TestCase):
         # Sim rows exist and are simulation-owned.
         self.assertEqual(SimulatedVehicle.objects.count(), 5)
         self.assertEqual(SimulationGateEvent.objects.count(), 1)
+        self.assertEqual(prompt.state, "confirmed")
         self.assertTrue(
             SimulationEvent.objects.filter(kind="run_started").exists()
         )

@@ -22,6 +22,9 @@ _ICONS = {
     "locate-fixed": '<line x1="2" x2="5" y1="12" y2="12"/><line x1="19" x2="22" y1="12" y2="12"/><line x1="12" x2="12" y1="2" y2="5"/><line x1="12" x2="12" y1="19" y2="22"/><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3"/>',
     "map-pin-off": '<path d="M12.75 7.09a3 3 0 0 1 2.16 2.16"/><path d="M17.072 17.072c-1.634 2.17-3.527 3.912-4.471 4.727a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 1.432-4.568"/><path d="m2 2 20 20"/><path d="M8.475 2.818A8 8 0 0 1 20 10c0 1.183-.31 2.377-.81 3.533"/><path d="M9.13 9.13a3 3 0 0 0 3.74 3.74"/>',
     "route": '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
+    "link": '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+    "navigation": '<polygon points="3 11 22 2 13 21 11 13 3 11"/>',
+    "external-link": '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
     "train-track": '<path d="M2 17 17 2"/><path d="m2 14 8 8"/><path d="m5 11 8 8"/><path d="m8 8 8 8"/><path d="m11 5 8 8"/><path d="m14 2 8 8"/><path d="M7 22 22 7"/>',
     "chevron-up": '<path d="m18 15-6-6-6 6"/>',
     "search": '<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>',
@@ -93,6 +96,21 @@ _STATUS_BADGES["open_simulated"] = {
     "icon": "flask-conical",
     "classes": "bg-violet-50 text-violet-800 ring-violet-600/20",
     "description": "A demo simulation marked this gate open — not real data.",
+}
+
+# Same-line inferred states: always labelled as inference, never as a
+# direct report (ADR-019).
+_STATUS_BADGES["closed_inferred"] = {
+    "label": "Likely closed (same line)",
+    "icon": "link",
+    "classes": "bg-red-50 text-red-800 ring-red-600/20",
+    "description": "A crossing on the same line was marked closed — inferred, not a direct report.",
+}
+_STATUS_BADGES["open_inferred"] = {
+    "label": "Likely open (same line)",
+    "icon": "link",
+    "classes": "bg-teal-50 text-teal-800 ring-teal-600/20",
+    "description": "A crossing on the same line was marked open — inferred, not a direct report.",
 }
 
 

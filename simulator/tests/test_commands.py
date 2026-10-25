@@ -4,7 +4,7 @@ from io import StringIO
 from django.contrib.gis.geos import LineString, Point
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from incidents.models import CrossingReport
 from railways.models import RailwayCrossing, RailwayTrack
@@ -44,6 +44,7 @@ class CommandTests(TestCase):
     def cmd(self, *args):
         return call_command("simulator", *args, stdout=self.out)
 
+    @override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
     def test_start_tick_gate_stop_reset(self):
         self.cmd(
             "start",
@@ -55,6 +56,7 @@ class CommandTests(TestCase):
             "120",
             "--gate",
             f"{self.crossing.pk}:2:4",
+            "--auto-confirm",
         )
         run = SimulationRun.objects.get()
         self.assertEqual(run.status, "running")

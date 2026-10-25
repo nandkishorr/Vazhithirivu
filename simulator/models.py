@@ -76,12 +76,18 @@ class SimulationRun(models.Model):
 
 
 class SimulatedVehicle(models.Model):
-    """A demo vehicle ping-ponging along a synthetic path.
+    """A static simulated *user device* parked near a crossing.
 
+    "Vehicle" is historical — simulated users never move (ADR-021).
     ``path`` is simulation-generated geometry (through a real crossing,
-    roughly perpendicular to the mapped track) — not real road or
-    provider route data. Positions advance in coarse ticks; clients
-    interpolate between ticks.
+    roughly perpendicular to the mapped track) used only to place the
+    parked position on a road-like approach — not real road or provider
+    route data.
+
+    While the physical gate at its crossing is closed, the parked user
+    counts as ``waiting`` and ``wait_ticks`` accumulates; dwell
+    detection on those waiting users raises confirmation prompts
+    (ADR-018).
     """
 
     run = models.ForeignKey(
@@ -92,9 +98,23 @@ class SimulatedVehicle(models.Model):
     path = models.LineStringField()
     path_length_m = models.FloatField()
     progress_m = models.FloatField()
-    direction = models.SmallIntegerField(default=1)  # +1 forward, -1 back
+    direction = models.SmallIntegerField(default=1)  # approach side: +1/-1
     speed_mps = models.FloatField()
     position = models.PointField()
+    # The mapped crossing this path passes through and where it sits on
+    # the path (the parked slot the user occupies near the gate).
+    crossing = models.ForeignKey(
+        "railways.RailwayCrossing",
+        on_delete=models.PROTECT,
+        related_name="simulated_vehicles",
+        null=True,
+        blank=True,
+    )
+    crossing_progress_m = models.FloatField(null=True, blank=True)
+    # Queue state: ``waiting`` = held at the gate; ``wait_ticks`` counts
+    # consecutive ticks spent waiting while the gate is closed.
+    waiting = models.BooleanField(default=False)
+    wait_ticks = models.IntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -157,6 +177,79 @@ class SimulationGateEvent(models.Model):
         return (
             f"gate {self.gate_state} on crossing {self.crossing_id} "
             f"(run {self.run_id}, tick {self.tick})"
+        )
+
+
+class SimulationPrompt(models.Model):
+    """A "is the gate closed?" confirmation raised by presence inference.
+
+    When enough simulated users dwell near a crossing whose (hidden) gate
+    is closed, a pending prompt is broadcast to the web app. A human
+    click resolves it: ``confirmed`` writes a closed
+    :class:`SimulationGateEvent` (the only way scheduled gates reach the
+    status overlay); ``dismissed``/``expired`` write nothing. One prompt
+    per run+crossing+closure — a resolved prompt is never re-raised for
+    the same closure cycle.
+    """
+
+    STATE_PENDING = "pending"
+    STATE_CONFIRMED = "confirmed"
+    STATE_DISMISSED = "dismissed"
+    STATE_EXPIRED = "expired"
+    STATE_CHOICES = [
+        (STATE_PENDING, "pending"),
+        (STATE_CONFIRMED, "confirmed"),
+        (STATE_DISMISSED, "dismissed"),
+        (STATE_EXPIRED, "expired"),
+    ]
+    RESOLVED_STATES = (STATE_CONFIRMED, STATE_DISMISSED, STATE_EXPIRED)
+
+    run = models.ForeignKey(
+        SimulationRun, on_delete=models.CASCADE, related_name="prompts"
+    )
+    crossing = models.ForeignKey(
+        "railways.RailwayCrossing",
+        on_delete=models.PROTECT,
+        related_name="simulation_prompts",
+    )
+    # The gate-spec close tick that produced this inference — part of the
+    # dedup key so a later closure cycle can prompt again.
+    truth_close_tick = models.IntegerField()
+    detected_tick = models.IntegerField()
+    # Indexes of the SimulatedVehicle rows counted as waiting users.
+    waiting_vehicle_indexes = models.JSONField(default=list, blank=True)
+    state = models.CharField(
+        max_length=10, choices=STATE_CHOICES, default=STATE_PENDING
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_note = models.CharField(max_length=120, blank=True)
+
+    class Meta:
+        ordering = ["run", "-created_at", "-pk"]
+        indexes = [models.Index(fields=["run", "state"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "crossing", "truth_close_tick"],
+                name="simulationprompt_run_crossing_close_tick",
+            ),
+            models.CheckConstraint(
+                condition=Q(
+                    state__in=[
+                        "pending",
+                        "confirmed",
+                        "dismissed",
+                        "expired",
+                    ]
+                ),
+                name="simulationprompt_state_valid",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"prompt {self.state} on crossing {self.crossing_id} "
+            f"(run {self.run_id}, tick {self.detected_tick})"
         )
 
 

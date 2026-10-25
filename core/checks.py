@@ -23,4 +23,16 @@ def google_maps_configuration(app_configs, **kwargs):
                 id="core.W002",
             )
         )
+    if bool(getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "")) != bool(
+        getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", "")
+    ):
+        warnings.append(
+            Warning(
+                "Google sign-in is only half configured; the button will "
+                "stay hidden until both credentials are set.",
+                hint="Set GOOGLE_OAUTH_CLIENT_ID and "
+                "GOOGLE_OAUTH_CLIENT_SECRET in .env (see .env.example).",
+                id="core.W003",
+            )
+        )
     return warnings

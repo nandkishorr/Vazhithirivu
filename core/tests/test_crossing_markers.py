@@ -66,6 +66,13 @@ class CrossingMarkerTests(TestCase):
         )
         self.assertEqual(config["crossingsMinZoom"], 12)
         self.assertEqual(config["bboxMaxSpan"], 1.5)
+        self.assertEqual(
+            config["navigationStartUrl"], "/api/navigation/sessions/"
+        )
+        self.assertEqual(
+            config["navigationSessionUrlTemplate"],
+            "/api/navigation/sessions/00000000-0000-0000-0000-000000000000/",
+        )
 
         self.assertIn('id="crossings-status"', content)
         self.assertIn("data-crossings-status-text", content)
@@ -99,6 +106,15 @@ class CrossingMarkerTests(TestCase):
         self.assertIn("Report or view details", content)
         self.assertIn('id="crossing-route-here"', content)
         self.assertIn("Route here", content)
+
+        # Journey mode UI: watch banner, closed-gate popup, pre-nav warning.
+        self.assertIn('id="journey-banner"', content)
+        self.assertIn('id="journey-end"', content)
+        self.assertIn('id="journey-alert"', content)
+        self.assertIn('id="journey-confirm"', content)
+        self.assertIn("data-journey-alert-dismiss", content)
+        self.assertIn("data-journey-confirm-go", content)
+        self.assertIn("not official railway information", content)
 
     def test_status_endpoint_for_marker_crossing(self):
         # The marker panel fetches /api/crossings/<id>/status/ for crossings

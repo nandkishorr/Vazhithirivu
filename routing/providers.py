@@ -51,17 +51,25 @@ class Waypoint:
     # opt-in "my location" fix or a map click); they are never stored.
     lat: float | None = None
     lng: float | None = None
+    # ``via`` marks a pass-through intermediate used only for detour
+    # synthesis (ADR-020) — never an origin/destination.
+    via: bool = False
 
     def as_api(self):
+        base = {}
         if self.place_id:
-            return {"placeId": self.place_id}
-        if self.lat is not None and self.lng is not None:
-            return {
+            base = {"placeId": self.place_id}
+        elif self.lat is not None and self.lng is not None:
+            base = {
                 "location": {
                     "latLng": {"latitude": self.lat, "longitude": self.lng}
                 }
             }
-        return {"address": self.address}
+        else:
+            base = {"address": self.address}
+        if self.via:
+            base["via"] = True
+        return base
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,9 @@ class RouteCandidate:
     description: str = ""
     labels: tuple = ()
     warnings: tuple = ()
+    # True when this candidate was synthesized by the detour via-point
+    # path rather than offered by the provider (ADR-020).
+    synthesized: bool = False
 
     @property
     def distance_km(self):
@@ -117,17 +128,24 @@ class GoogleRoutesProvider:
     def traffic_aware(self):
         return self._traffic_aware
 
-    def compute_routes(self, origin: Waypoint, destination: Waypoint):
+    def compute_routes(
+        self, origin: Waypoint, destination: Waypoint, intermediates=None
+    ):
         body = {
             "origin": origin.as_api(),
             "destination": destination.as_api(),
             "travelMode": "DRIVE",
-            "computeAlternativeRoutes": True,
             "polylineQuality": "HIGH_QUALITY",
             "languageCode": "en",
             "regionCode": "IN",
             "units": "METRIC",
         }
+        # Google ignores computeAlternativeRoutes once intermediates are
+        # present — a via call deterministically returns its own route.
+        if intermediates:
+            body["intermediates"] = [w.as_api() for w in intermediates]
+        else:
+            body["computeAlternativeRoutes"] = True
         if self._traffic_aware:
             body["routingPreference"] = "TRAFFIC_AWARE"
 

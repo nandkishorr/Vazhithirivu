@@ -2,33 +2,43 @@
 
 Safety rules encoded here (ADR-004/ADR-013):
 - ``closed_reported`` crossings on/near the primary route are "blocking";
-  unknown/stale states never produce warnings.
+  unknown/stale states never produce warnings. Same-line inferred
+  closures (ADR-020) block too — they are labelled as inference.
 - Alternative routes are only evaluated when something blocks the primary.
 - An alternative is ``verified`` only when every blocking crossing is
   farther than ``ROUTE_AVOID_CLEARANCE_M`` from its geometry and it has no
-  closed_reported crossing of its own. Nothing else may be called
-  avoidance.
+  closed crossing of its own. Nothing else may be called avoidance.
+- When the provider returns a single route, ``_detour_candidates``
+  synthesizes extra candidates through a via point offset from the
+  blocked crossing; they go through the identical verification, so an
+  unverified detour is never sold as avoidance.
 """
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass, field, replace
 
 from django.conf import settings
 from django.utils import timezone
 
 from incidents import services as incident_services
 from incidents.services import (
+    STATE_CLOSED_INFERRED,
     STATE_CLOSED_REPORTED,
     STATE_CLOSED_SIMULATED,
     STATE_CONFLICTING,
 )
 
 # States that make a crossing "blocking" for route purposes. A simulated
-# closure blocks exactly like a reported one — it is labelled everywhere
-# as demo data, and never written as a community report (ADR-015).
-BLOCKING_STATES = (STATE_CLOSED_REPORTED, STATE_CLOSED_SIMULATED)
+# or same-line-inferred closure blocks exactly like a reported one —
+# each is labelled for what it is, never as a direct report.
+BLOCKING_STATES = (
+    STATE_CLOSED_REPORTED,
+    STATE_CLOSED_SIMULATED,
+    STATE_CLOSED_INFERRED,
+)
 from railways.models import RailwayCrossing
 
 from .analysis import crossings_along_route, distances_to_crossings
-from .providers import RoutingError
+from .providers import RoutingError, Waypoint
 from .throttle import allow_request
 
 
@@ -81,6 +91,10 @@ class RoutePlan:
     provider_name: str = ""
     attribution: str = ""
     traffic_aware: bool = False
+    # Route shown/selected first: the primary, or the first *verified*
+    # alternative when the primary is blocked (ADR-021) — the suggested
+    # route never passes a closed crossing it could avoid.
+    preferred_route_id: str = "r0"
 
     @property
     def alternatives(self):
@@ -92,16 +106,26 @@ class RoutePlan:
 
     @property
     def blocking_names(self):
-        return ", ".join(
-            (e.crossing.name or "Unnamed level crossing")
-            + (" (simulated)" if e.status.simulation else "")
-            for e in self.blocking
-        )
+        parts = []
+        for e in self.blocking:
+            name = e.crossing.name or "Unnamed level crossing"
+            if e.status.simulation:
+                name += " (simulated)"
+            elif getattr(e.status, "inference", None):
+                name += " (likely — same line)"
+            parts.append(name)
+        return ", ".join(parts)
 
     @property
     def blocking_all_simulated(self):
         return bool(self.blocking) and all(
             e.status.simulation for e in self.blocking
+        )
+
+    @property
+    def blocking_all_inferred(self):
+        return bool(self.blocking) and all(
+            getattr(e.status, "inference", None) for e in self.blocking
         )
 
 
@@ -124,6 +148,61 @@ def _delta(primary_val, alt_val):
     if primary_val is None or alt_val is None:
         return None
     return alt_val - primary_val
+
+
+def _detour_via_points(candidate, blocking):
+    """Via points offset sideways from the blocking crossings.
+
+    Forcing a route through a point ``ROUTE_DETOUR_VIA_OFFSET_M`` metres
+    perpendicular to the route line at the blocked crossing is the
+    standard way to make the provider surface the road around a blocked
+    segment it didn't offer on its own. Returns up to
+    ``ROUTE_DETOUR_MAX_CALLS`` ``via`` waypoints (Google returns a
+    single route per via call).
+    """
+    geometry = candidate.geometry
+    total_m = candidate.distance_m
+    if geometry is None or not total_m:
+        return []
+    offset_m = settings.ROUTE_DETOUR_VIA_OFFSET_M
+    ordered = sorted(
+        blocking,
+        key=lambda e: 0 if e.crossing.match == "on_route" else 1,
+    )
+    points = []
+    seen = set()
+    for entry in ordered:
+        frac = min(1.0, max(0.0, entry.crossing.along_m / total_m))
+        window = min(0.05, 100.0 / total_m)  # ~100 m tangent sample
+        p1 = geometry.interpolate_normalized(max(0.0, frac - window))
+        p2 = geometry.interpolate_normalized(min(1.0, frac + window))
+        if p1.equals(p2):
+            continue
+        lat = (p1.y + p2.y) / 2
+        dx = (p2.x - p1.x) * math.cos(math.radians(lat))
+        dy = p2.y - p1.y
+        bearing = math.atan2(dx, dy)
+        base = geometry.interpolate_normalized(frac)
+        for sign in (1, -1):
+            angle = bearing + sign * math.pi / 2
+            via_lat = base.y + math.cos(angle) * offset_m / 111320.0
+            via_lng = base.x + math.sin(angle) * offset_m / (
+                111320.0 * math.cos(math.radians(base.y))
+            )
+            key = (round(via_lat, 4), round(via_lng, 4))
+            if key in seen:
+                continue
+            seen.add(key)
+            points.append(
+                Waypoint(
+                    lat=round(via_lat, 6),
+                    lng=round(via_lng, 6),
+                    via=True,
+                )
+            )
+            if len(points) >= settings.ROUTE_DETOUR_MAX_CALLS:
+                return points
+    return points
 
 
 def plan_route(origin, destination, client_key, now=None):
@@ -170,14 +249,77 @@ def plan_route(origin, destination, client_key, now=None):
         list(crossings_by_id.values()), now=now
     )
 
-    routes = []
-    blocking = []
-    for i, (candidate, rows) in enumerate(zip(candidates, per_candidate)):
-        entries = tuple(
+    def entries_for(rows):
+        return tuple(
             RouteCrossingStatus(crossing=r, status=statuses[r.crossing_id])
             for r in rows
             if r.crossing_id in statuses
         )
+
+    entries_list = [entries_for(rows) for rows in per_candidate]
+    blocking = (
+        [e for e in entries_list[0] if e.status.state in BLOCKING_STATES]
+        if entries_list
+        else []
+    )
+
+    # The provider offered no alternatives and the route is blocked:
+    # synthesize detour candidates through a via point offset sideways
+    # from each blocking crossing (ADR-020). They get the identical
+    # crossing analysis and avoidance verification — a detour that still
+    # passes the blocked crossing simply comes out ``passes``.
+    if blocking and len(candidates) == 1 and settings.ROUTE_DETOUR_ENABLED:
+        for via in _detour_via_points(candidates[0], blocking):
+            if not allow_request(client_key):
+                break
+            try:
+                detours = provider.compute_routes(
+                    origin, destination, intermediates=[via]
+                )
+            except RoutingError:
+                continue
+            if not detours:
+                continue
+            cand = replace(
+                detours[0],
+                index=len(candidates),
+                synthesized=True,
+                description=detours[0].description or "Detour via side roads",
+            )
+            # Identical geometry to an existing candidate adds nothing —
+            # both via points often resolve to the same road.
+            if cand.geometry is not None and any(
+                c.geometry is not None and c.geometry.equals(cand.geometry)
+                for c in candidates
+            ):
+                continue
+            rows = (
+                crossings_along_route(cand.geometry)
+                if cand.geometry is not None
+                else []
+            )
+            new_ids = [
+                r.crossing_id
+                for r in rows
+                if r.crossing_id not in crossings_by_id
+            ]
+            if new_ids:
+                extra = {
+                    c.pk: c
+                    for c in RailwayCrossing.objects.filter(pk__in=new_ids)
+                }
+                crossings_by_id.update(extra)
+                statuses.update(
+                    incident_services.effective_statuses(
+                        list(extra.values()), now=now
+                    )
+                )
+            candidates.append(cand)
+            per_candidate.append(rows)
+            entries_list.append(entries_for(rows))
+
+    routes = []
+    for i, (candidate, entries) in enumerate(zip(candidates, entries_list)):
         counts = {}
         for entry in entries:
             counts[entry.status.state] = counts.get(entry.status.state, 0) + 1
@@ -199,10 +341,6 @@ def plan_route(origin, destination, client_key, now=None):
             ),
         )
         routes.append(route)
-        if i == 0:
-            blocking = [
-                e for e in entries if e.status.state in BLOCKING_STATES
-            ]
 
     # Warning level reflects the primary route only.
     warning_level = None
@@ -221,6 +359,13 @@ def plan_route(origin, destination, client_key, now=None):
     clearance_m = settings.ROUTE_AVOID_CLEARANCE_M
     has_verified = False
     if blocking:
+        # Honest wording for what actually blocks the route.
+        if all(e.status.simulation for e in blocking):
+            blocking_word = "simulated-closed"
+        elif all(getattr(e.status, "inference", None) for e in blocking):
+            blocking_word = "likely-closed"
+        else:
+            blocking_word = "reported-closed"
         blocking_ids = [e.crossing.crossing_id for e in blocking]
         primary = routes[0]
         updated = [primary]
@@ -251,23 +396,25 @@ def plan_route(origin, destination, client_key, now=None):
             if own_closed:
                 verification = "passes"
                 detail = (
-                    "This route also has a crossing reported closed: "
+                    f"This route also has a {blocking_word} crossing: "
                     + ", ".join(own_closed)
                 )
             elif min_clearance <= near_m:
                 verification = "passes"
-                detail = "This route still passes a reported-closed crossing."
+                detail = (
+                    f"This route still passes a {blocking_word} crossing."
+                )
             elif missing:
                 verification = "unverifiable"
                 detail = (
                     "We couldn't measure this route's distance from every "
-                    "reported-closed crossing, so avoidance can't be verified."
+                    f"{blocking_word} crossing, so avoidance can't be verified."
                 )
             elif min_clearance <= clearance_m:
                 verification = "uncertain"
                 detail = (
                     "This route stays only about "
-                    f"{min_clearance:.0f} m from a reported-closed crossing "
+                    f"{min_clearance:.0f} m from a {blocking_word} crossing "
                     "— too close to confirm it avoids it."
                 )
             else:
@@ -275,7 +422,7 @@ def plan_route(origin, destination, client_key, now=None):
                 detail = (
                     "Checked: this route stays more than "
                     f"{round(min_clearance):.0f} m from every "
-                    "reported-closed crossing on the original route "
+                    f"{blocking_word} crossing on the original route "
                     "(by route geometry)."
                 )
                 has_verified = True
@@ -310,4 +457,8 @@ def plan_route(origin, destination, client_key, now=None):
         provider_name=provider.name,
         attribution=provider.attribution,
         traffic_aware=getattr(provider, "traffic_aware", False),
+        preferred_route_id=next(
+            (r.id for r in routes[1:] if r.verification == "verified"),
+            "r0",
+        ),
     )

@@ -150,3 +150,47 @@ class RailwayTrack(OsmReferenceFeature):
             ),
         ]
         indexes = [models.Index(fields=["is_active"])]
+
+
+class CrossingLink(models.Model):
+    """A crossing's consecutive neighbours along the same rail line.
+
+    Derived reference topology (not OSM data, not incident data): built
+    by ``railways.topology.rebuild_crossing_links`` from active track
+    geometry. ``rank`` is 1 for the nearest crossing measured along the
+    connected track network, so "up to 3 crosses in the same line" is a
+    ``rank <= 3`` lookup. Rows are fully rebuilt, never hand-edited.
+    """
+
+    from_crossing = models.ForeignKey(
+        RailwayCrossing,
+        on_delete=models.CASCADE,
+        related_name="line_links",
+    )
+    to_crossing = models.ForeignKey(
+        RailwayCrossing,
+        on_delete=models.CASCADE,
+        related_name="incoming_line_links",
+    )
+    rank = models.PositiveSmallIntegerField()
+    distance_m = models.FloatField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["from_crossing", "rank"],
+                name="crossinglink_unique_from_rank",
+            ),
+            models.UniqueConstraint(
+                fields=["from_crossing", "to_crossing"],
+                name="crossinglink_unique_from_to",
+            ),
+            models.CheckConstraint(
+                condition=Q(rank__gte=1),
+                name="crossinglink_rank_positive",
+            ),
+        ]
+        indexes = [models.Index(fields=["to_crossing"])]
+
+    def __str__(self):
+        return f"link {self.from_crossing_id} -> {self.to_crossing_id} (#{self.rank}, {self.distance_m:.0f} m)"

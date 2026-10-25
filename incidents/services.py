@@ -22,6 +22,8 @@ STATE_STALE = "stale"
 STATE_UNKNOWN = "unknown"
 STATE_CLOSED_SIMULATED = "closed_simulated"
 STATE_OPEN_SIMULATED = "open_simulated"
+STATE_CLOSED_INFERRED = "closed_inferred"
+STATE_OPEN_INFERRED = "open_inferred"
 
 STATUS_META = {
     STATE_CLOSED_REPORTED: {
@@ -56,6 +58,22 @@ STATUS_META = {
         "description": (
             "A demo simulation marked this crossing's gate open — "
             "simulated data, not a real-world report."
+        ),
+    },
+    STATE_CLOSED_INFERRED: {
+        "label": "Likely closed (same line)",
+        "description": (
+            "A crossing on the same railway line was marked closed — "
+            "this crossing's gate likely closed too. Inferred, not a "
+            "direct report for this crossing."
+        ),
+    },
+    STATE_OPEN_INFERRED: {
+        "label": "Likely open (same line)",
+        "description": (
+            "A crossing on the same railway line was marked open — "
+            "this crossing's gate likely opened too. Inferred, not a "
+            "direct report for this crossing."
         ),
     },
 }
@@ -350,20 +368,50 @@ def register_status_overlay(provider):
     _status_overlay_provider = provider
 
 
+# --- Same-line propagation (ADR-020) ----------------------------------------
+#
+# A live closed/open state on a crossing propagates to the consecutive
+# crossings on the same railway line (``CrossingLink``, up to
+# ``RAILWAY_LINK_MAX_NEIGHBORS`` neighbours along the track) — a train at
+# one gate reaches those gates within minutes. The neighbour shows an
+# *inferred* state, never the direct-report state: it stays honest that
+# no one reported that crossing itself. Direct reports and simulation
+# overlays always outrank inference, inference never chains (a
+# ``*_inferred`` state is never a source), and ``closed`` beats ``open``
+# when links disagree — the safer direction.
+
+# A crossing may only *receive* inference when it has no live signal of
+# its own (direct reports, conflicts and simulation all outrank it).
+_INFERABLE_STATES = {STATE_UNKNOWN, STATE_STALE}
+
+# Source effective state -> (inferred state, simulated flag). Simulated
+# sources propagate too, but stay labelled as simulation-derived.
+_PROPAGATED_FROM = {
+    STATE_CLOSED_REPORTED: (STATE_CLOSED_INFERRED, False),
+    STATE_CLOSED_SIMULATED: (STATE_CLOSED_INFERRED, True),
+    STATE_OPEN_REPORTED: (STATE_OPEN_INFERRED, False),
+    STATE_OPEN_SIMULATED: (STATE_OPEN_INFERRED, True),
+}
+
+
 @dataclass(frozen=True)
 class EffectiveStatus:
-    """Community status plus an optional simulated overlay.
+    """Community status plus optional overlay and same-line inference.
 
     ``state`` is the display state: a community ``closed_reported`` always
     outranks a simulated gate state; otherwise an active simulation gate
-    yields ``closed_simulated``/``open_simulated``. Attributes not defined
-    here delegate to the underlying ``CrossingStatus`` (``last_report_at``,
+    yields ``closed_simulated``/``open_simulated``; when neither applies
+    and the crossing is unknown/stale, a closed/open crossing on the same
+    rail line yields ``closed_inferred``/``open_inferred`` with
+    ``inference`` carrying the provenance. Attributes not defined here
+    delegate to the underlying ``CrossingStatus`` (``last_report_at``,
     ``age``, counts, …).
     """
 
     state: str
     community: CrossingStatus
     simulation: dict | None = None
+    inference: dict | None = None
 
     def __getattr__(self, name):
         return getattr(self.community, name)
@@ -372,14 +420,99 @@ class EffectiveStatus:
     def simulated(self):
         return self.simulation is not None
 
+    @property
+    def inferred(self):
+        return self.inference is not None
 
-def effective_statuses(crossings, now=None):
-    """Derived statuses plus any registered overlay (e.g. simulator).
+
+def _apply_line_inference(crossings, result, now):
+    """Overlay same-line inferred states onto ``result`` in place.
+
+    ``result`` is ``{pk: EffectiveStatus}`` for ``crossings``. Sources
+    outside the input set are resolved with propagation off (one hop —
+    an inferred state never propagates further).
+    """
+    from railways.models import CrossingLink, RailwayCrossing
+
+    candidates = [
+        c for c in crossings if result[c.pk].state in _INFERABLE_STATES
+    ]
+    if not candidates:
+        return
+    links_by_from = {}
+    missing_src_ids = set()
+    links = (
+        CrossingLink.objects.filter(
+            from_crossing_id__in=[c.pk for c in candidates]
+        )
+        .select_related("to_crossing")
+        .order_by("from_crossing_id", "rank")
+    )
+    for link in links:
+        links_by_from.setdefault(link.from_crossing_id, []).append(link)
+        if link.to_crossing_id not in result:
+            missing_src_ids.add(link.to_crossing_id)
+    src_statuses = {}
+    if missing_src_ids:
+        src_crossings = list(
+            RailwayCrossing.objects.filter(
+                pk__in=missing_src_ids, is_active=True
+            ).only("pk")
+        )
+        src_statuses = effective_statuses(
+            src_crossings, now=now, propagate=False
+        )
+    for crossing in candidates:
+        # Nearest closed source wins; open only when nothing closed.
+        best = None
+        for link in links_by_from.get(crossing.pk, ()):
+            target = link.to_crossing
+            if target.is_suppressed or not target.is_active:
+                continue
+            src = result.get(link.to_crossing_id) or src_statuses.get(
+                link.to_crossing_id
+            )
+            if src is None:
+                continue
+            mapped = _PROPAGATED_FROM.get(src.state)
+            if mapped is None:
+                continue
+            state, simulated = mapped
+            if state == STATE_CLOSED_INFERRED:
+                best = (link, src, simulated)
+                break
+            if best is None:
+                best = (link, src, simulated)
+        if best is None:
+            continue
+        link, src, simulated = best
+        inferred_state = (
+            STATE_CLOSED_INFERRED
+            if _PROPAGATED_FROM[src.state][0] == STATE_CLOSED_INFERRED
+            else STATE_OPEN_INFERRED
+        )
+        current = result[crossing.pk]
+        result[crossing.pk] = EffectiveStatus(
+            state=inferred_state,
+            community=current.community,
+            simulation=current.simulation,
+            inference={
+                "from_crossing_id": link.to_crossing_id,
+                "from_name": getattr(link.to_crossing, "name", "") or "",
+                "distance_m": link.distance_m,
+                "source_state": src.state,
+                "simulated": simulated,
+            },
+        )
+
+
+def effective_statuses(crossings, now=None, propagate=True):
+    """Derived statuses plus overlays (simulator, same-line inference).
 
     Same contract as :func:`derive_statuses` — ``{pk: EffectiveStatus}``
     for every input crossing — with one extra query when an overlay is
-    registered. Simulated overlays never mutate or re-derive the
-    underlying community status.
+    registered and one link query when inference applies. Overlays never
+    mutate or re-derive the underlying community status.
     """
     now = now or timezone.now()
     crossings = list(crossings)
@@ -401,6 +534,8 @@ def effective_statuses(crossings, now=None):
         result[crossing.pk] = EffectiveStatus(
             state=state, community=community, simulation=sim
         )
+    if propagate:
+        _apply_line_inference(crossings, result, now)
     return result
 
 

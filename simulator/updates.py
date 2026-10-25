@@ -10,6 +10,7 @@ import logging
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.urls import reverse
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -60,8 +61,31 @@ def publish_run_event(run, kind):
     )
 
 
-def publish_tick(run, vehicles, gate_states, now=None):
-    """Push one coarse tick: vehicle positions + full gate-state map."""
+def prompt_payload(prompt):
+    """Public payload for a SimulationPrompt (API, WS, snapshot)."""
+    crossing = prompt.crossing
+    return {
+        "id": prompt.pk,
+        "crossing_id": prompt.crossing_id,
+        "crossing_name": crossing.name or "Unnamed level crossing",
+        "crossing_lat": round(crossing.location.y, 6),
+        "crossing_lng": round(crossing.location.x, 6),
+        "waiting_users": len(prompt.waiting_vehicle_indexes or []),
+        "detected_tick": prompt.detected_tick,
+        "state": prompt.state,
+        "detected_at": prompt.created_at.isoformat(),
+        "confirm_url": reverse(
+            "api_simulation_prompt_confirm", args=[prompt.pk]
+        ),
+        "dismiss_url": reverse(
+            "api_simulation_prompt_dismiss", args=[prompt.pk]
+        ),
+        "simulated": True,
+    }
+
+
+def publish_tick(run, vehicles, gate_states, prompts=None, now=None):
+    """Push one coarse tick: vehicle positions + gate map + prompts."""
     now = now or timezone.now()
     _send(
         group_name(run.pk),
@@ -75,13 +99,50 @@ def publish_tick(run, vehicles, gate_states, now=None):
                 "gates": {
                     str(pk): state for pk, state in gate_states.items()
                 },
+                "prompts": [
+                    prompt_payload(p) for p in (prompts or [])
+                ],
                 "simulated": True,
             },
         },
     )
 
 
-def build_snapshot(run, vehicles, gate_states, now=None):
+def publish_prompt(prompt):
+    """Broadcast a newly raised confirmation prompt to all sim clients."""
+    _send(
+        CONTROL_GROUP,
+        {
+            "type": "sim.prompt",
+            "payload": {
+                "type": "sim.prompt",
+                "prompt": prompt_payload(prompt),
+                "as_of": timezone.now().isoformat(),
+                "simulated": True,
+            },
+        },
+    )
+
+
+def publish_prompt_resolved(prompt):
+    """Broadcast that a prompt was confirmed/dismissed/expired."""
+    _send(
+        CONTROL_GROUP,
+        {
+            "type": "sim.prompt",
+            "payload": {
+                "type": "sim.prompt.resolved",
+                "prompt_id": prompt.pk,
+                "crossing_id": prompt.crossing_id,
+                "state": prompt.state,
+                "as_of": timezone.now().isoformat(),
+                "simulated": True,
+            },
+        },
+    )
+
+
+def build_snapshot(run, vehicles, gate_states, prompts=None, now=None):
     """Payload sent to a client right after subscribing to a run."""
     now = now or timezone.now()
     return {
@@ -90,5 +151,6 @@ def build_snapshot(run, vehicles, gate_states, now=None):
         "at": now.isoformat(),
         "vehicles": vehicles,
         "gates": {str(pk): state for pk, state in gate_states.items()},
+        "prompts": [prompt_payload(p) for p in (prompts or [])],
         "simulated": True,
     }

@@ -172,3 +172,205 @@ When a proposal becomes implemented, update its status and include the implement
   `data-route-select` because `#route-result` innerHTML is swapped.
   Endpoint A/B pins are derived from route geometry endpoints. The
   routing throttle (per-client/hour) also guards click-driven reroutes.
+
+## ADR-017 — Journey sessions: session-scoped position checks + Google Maps handoff
+- Status: Accepted (Session 10)
+- Decision: A `navigation` app owns opt-in journey sessions for real
+  users. `POST /api/navigation/sessions/` creates a `JourneySession` —
+  a UUID capability token with `created_at`/`ended_at`/
+  `last_position_check_at` and **no coordinates, route content or user
+  identity** — throttled per client (`NAV_MAX_SESSIONS_PER_HOUR`).
+  `POST …/position/` accepts `{lat,lng}` only inside an active session,
+  enforces `NAV_MIN_UPDATE_SECONDS`, and answers one
+  `railways.queries.crossings_near_point` call (raw SQL geography
+  `ST_DWithin` + `ST_Distance`, bounded by `NAV_NEARBY_RADIUS_M` /
+  `NAV_NEARBY_LIMIT`) plus one bulk `effective_statuses` — the
+  position is used transiently and never stored. Crossings inside
+  `NAV_ALERT_RADIUS_M` with a blocking status
+  (`closed_reported`/`closed_simulated`, same states routing treats
+  as blocking) are returned in `alerts`. `POST …/end/` is idempotent;
+  sessions expire after `NAV_SESSION_MAX_HOURS` and
+  `purge_navigation_sessions` deletes rows older than
+  `NAV_SESSION_RETENTION_DAYS`. CSRF stays on (`@ensure_csrf_cookie`
+  on home + `X-CSRFToken` header) — these are real-user endpoints,
+  unlike the csrf-exempt simulator demo API.
+- Frontend: each route panel offers "Start journey — watch for closed
+  gates" (browser `watchPosition`; a teal journey marker with a
+  heading arrow; throttled checks by `min_update_seconds` +
+  `min_update_distance_m`; a red popup lists closed gates inside the
+  alert radius and tags ones `on_route` on the selected route;
+  dismissing suppresses that alert until it leaves the radius or its
+  status changes) and "Open in Google Maps" (the universal
+  `maps/dir/?api=1` directions URL — place ids, or coordinates only
+  when the user already opted in; Google may choose its own path, we
+  do not claim it is ours). When the selected route already carries a
+  blocking crossing, a pre-navigation warning card lists it before
+  either action runs — user-confirmed, like route switching.
+- Rationale: the product's value is warning drivers approaching a
+  closed gate; real turn-by-turn is delegated to Google Maps instead
+  of re-built in-app, while crossing-status alerts stay ours.
+  Keeping positions out of the database preserves ADR-005's privacy
+  posture while sessions satisfy the "updates only inside a
+  permitted session" rule.
+- Consequences: the position endpoint never echoes or stores
+  coordinates (asserted by tests — the session schema has no
+  coordinate columns). Anonymous use is allowed (sessions are
+  unguessable UUIDs); abuse is bounded by the start throttle, the
+  per-session min interval and the TTL. No location channel exists on
+  WebSockets — checks are HTTP POST only. Journey mode needs
+  `watchPosition`, i.e. HTTPS/localhost and an explicit Start click;
+  "Open in Google Maps" alone needs no location permission.
+
+## ADR-018 — Simulated presence inference: queues → prompt → human confirmation
+- Status: Accepted (Session 10)
+- Decision: `--gate ID:CLOSE[:OPEN]` now describes the *physical* gate
+  schedule of the demo world — it makes simulated users stop and queue
+  at the crossing and no longer writes `SimulationGateEvent` rows
+  directly. Each `SimulatedVehicle` doubles as a user device and
+  remembers the crossing its path passes through (`crossing`,
+  `crossing_progress_m`, `waiting`, `wait_ticks`); `SIM_QUEUE_VEHICLES`
+  staged users spawn already queued per gated crossing (deterministic),
+  and passers-by are clamped into the same queue. Presence inference
+  (`_detect_prompts` each tick) raises a `SimulationPrompt` when at
+  least `SIM_DWELL_MIN_USERS` waiting users stay within
+  `SIM_DWELL_RADIUS_M` for `SIM_DWELL_SECONDS`; one prompt per
+  run+crossing+closure (unique `truth_close_tick`). Only a confirmed
+  prompt writes a `closed` gate event (`POST
+  /api/simulation/prompts/<id>/confirm/`); dismiss writes nothing, and
+  pending prompts expire on `SIM_PROMPT_TTL_SECONDS`, gate reopen, or
+  run end. A physical reopen after a confirmed closure surfaces `open`
+  automatically — the queue disperses, no second confirmation.
+  `--auto-confirm` resolves prompts instantly through the same code
+  path for click-free demos. Prompts ride `sim.tick`/snapshot/
+  `/api/simulation/` payloads and broadcast as `sim.prompt` /
+  `sim.prompt.resolved` frames on `sim.control`; the web app renders
+  violet confirmation cards that POST the URLs from the payload.
+- Rationale: the product premise is inferring gate state from real
+  users' dwell near crossings, with a human confirmation before it
+  affects routes — the demo should rehearse that loop, not a timetable.
+  Keeping surfaced status behind `SimulationGateEvent` means routing,
+  badges and pushes needed no change.
+- Consequences: the prompt endpoints are `csrf_exempt` — they mutate
+  only `simulator_*` demo rows and carry no identity. Confirmed
+  closures still reach status as `closed_simulated` and block routes
+  identically to `closed_reported`. Dwell/radius values are
+  demo-compressed defaults (`SIM_*` env knobs, `simulator.E004`); a
+  real deployment would use minutes, not ~20 s.
+
+## ADR-019 — Google sign-in via django-allauth (socialaccount)
+- Status: Accepted (Session 12)
+- Decision: Google OAuth 2.0 sign-in is provided by `django-allauth`
+  (`allauth` + `allauth.account` + `allauth.socialaccount` +
+  `allauth.socialaccount.providers.google`). Credentials come from
+  `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` (settings
+  `SOCIALACCOUNT_PROVIDERS["google"]["APP"]`, no `SocialApp` DB rows,
+  no `django.contrib.sites`). `allauth.urls` is mounted at `accounts/`
+  *after* our own `login`/`logout` patterns so the existing Tailwind
+  `registration/login.html` keeps serving `/accounts/login/`; allauth's
+  account URLs remain reachable underneath (`account_login`,
+  `account_signup`, password reset, connections) because allauth
+  internals reverse them. The login page's Google button POSTs to
+  `{% provider_login_url "google" %}` (LOGIN_ON_GET stays off).
+- Policy: public username/password signup stays closed
+  (`core.adapters.AccountAdapter.is_open_for_signup` → `signup_closed`);
+  Google sign-in self-registers (`SOCIALACCOUNT_AUTO_SIGNUP` default).
+  `SOCIALACCOUNT_EMAIL_AUTHENTICATION` + `_AUTO_CONNECT` are on, so a
+  Google-verified email matching an existing user (e.g. an
+  administrator-created reporter) logs into and links that account.
+  `SOCIALACCOUNT_STORE_TOKENS` stays off — we only need identity.
+- Rationale: ADR-011 deferred sign-in to a "vetted package"; allauth is
+  the standard Django social-auth implementation and keeps the OAuth
+  state/nonce/callback handling, `email_verified` enforcement and
+  account-linking edge cases upstream.
+- Consequences: `requests` is an undeclared allauth dependency — pinned
+  explicitly. Without credentials the app boots normally, the button is
+  hidden (`GOOGLE_OAUTH_ENABLED` context flag), and `core.W003` warns on
+  a half-set pair. The Google redirect URI is
+  `<origin>/accounts/google/login/callback/`. `EMAIL_BACKEND` is
+  env-tunable (console in dev) for allauth's account emails. Styled
+  overrides exist for `socialaccount/login.html`, `login_cancelled`,
+  `login_error` and `account/signup_closed`; other allauth account
+  pages fall back to its own templates.
+
+## ADR-020 — Same-line status propagation + via-point detour synthesis
+- Status: Accepted (Session 13, owner-requested)
+- Decision: Two related changes. (1) A new derived-topology table
+  `railways.CrossingLink` stores each crossing's nearest
+  `RAILWAY_LINK_MAX_NEIGHBORS` (default 3) crossings measured *along the
+  connected track network* — built by `railways/topology.py`
+  (`rebuild_crossing_links`, graph of way-vertex nodes + Dijkstra;
+  crossings snap to the nearest vertex within `RAILWAY_LINK_SNAP_M`,
+  neighbours capped at `RAILWAY_LINK_MAX_DISTANCE_M`). Links rebuild at
+  the end of every OSM import and on demand via
+  `manage.py link_crossings`; admin sees them read-only. A live
+  `closed`/`open` state — community `*_reported` or `*_simulated` — is
+  surfaced on the consecutive crossings as the new derived states
+  `closed_inferred` / `open_inferred`, carrying `inference` provenance
+  (source crossing, along-track distance, simulated flag). Inference is
+  one hop (an inferred state is never a source), applies only to
+  `unknown`/`stale` targets, closed beats open when links disagree, and
+  suppressed/inactive sources never propagate. Report writes republish
+  neighbour statuses over the existing `crossing.<pk>` WS groups.
+  (2) When a crossing blocks the primary route and the provider returns
+  no alternative, `plan_route` synthesizes up to
+  `ROUTE_DETOUR_MAX_CALLS` extra candidates: a `via` waypoint offset
+  `ROUTE_DETOUR_VIA_OFFSET_M` perpendicular to the route at the blocked
+  crossing. Synthesized candidates get the identical crossing analysis
+  and avoidance verification — a detour that still passes the crossing
+  is `passes`, never "avoids" — and are labelled "Detour via side
+  roads"/"detour suggestion" (`RouteCandidate.synthesized`,
+  `providers.Waypoint.via`). Each via call consumes the per-client
+  throttle budget; `ROUTE_DETOUR_ENABLED=0` disables.
+- Rationale: a train at one gate reaches the consecutive gates on the
+  same line within minutes, so the same status is genuinely useful — but
+  only as honestly-labelled inference, not a fabricated direct report.
+  Google's `computeAlternativeRoutes` frequently returns a single route;
+  the via-point nudge surfaces the side-road route (e.g. via KPK Menon
+  Rd) that drivers would otherwise never see.
+- Consequences: propagation lives in `effective_statuses`, so the bbox
+  map, single status, WS pushes, journey alerts and routing all get
+  `*_inferred` for free; `derive_statuses` stays community-only.
+  `closed_inferred` is a routing `BLOCKING_STATE` and a journey
+  `ALERT_STATE`, always labelled "likely". Typed-but-unselected
+  origin/destination text is now synced into the hidden form fields on
+  every reroute path (map click, "Route here", "Open in Google Maps"),
+  so a custom source works everywhere "My location" does; a custom
+  source clears any stale my-location coords before the request.
+
+## ADR-021 — Static simulated users + auto-selected verified detour
+- Status: Accepted (Session 14, owner-requested)
+- Decision: Two related changes. (1) Simulated users are *static*:
+  every `SimulatedVehicle` row is a parked user device that never moves
+  — no more ping-ponging passers-by. `spawn_vehicles` places all
+  `--vehicles` users in queue slots on the approaches to the run's
+  gated crossings (round-robin, alternating sides, `SIM_QUEUE_GAP_M` +
+  `SIM_QUEUE_SPACING_M` + jitter), or at seeded random crossings when
+  no gate is scheduled. `_advance_vehicles` is replaced by
+  `_update_dwell`: a parked user counts as `waiting` (darkened pin)
+  only while its crossing's physical gate is closed, and `wait_ticks`
+  accumulates/reset for presence inference exactly as before — the
+  ADR-018 prompt → confirm → `SimulationGateEvent` flow is unchanged.
+  `SIM_VEHICLE_MIN/MAX_SPEED_MPS` and `SIM_QUEUE_VEHICLES` are removed
+  (dead config; `simulator.E003` deleted). `speed_mps` is stored as 0;
+  the `path`/`progress_m`/`direction` fields remain as placement
+  geometry. (2) When the primary route is blocked and at least one
+  alternative verifies as avoiding the closure, that route is the
+  *preferred* one: `RoutePlan.preferred_route_id` (first `verified`
+  alternative, else `"r0"`), surfaced as `route_data.selected`, drives
+  the "Recommended" badge, the visible route panel, and the map's
+  selected polyline — the blocked primary stays selectable as
+  "Route 1" with a "Closed gate on/near route" tag.
+- Rationale: the demo story is users detected at rest near a gate
+  (dwell → inference → confirmation), not simulated traffic; moving
+  vehicles added noise without contributing to inference. And when a
+  gate on the route is closed, "give me a route" should mean the
+  verified way around it, not the blocked line with a warning and an
+  extra click.
+- Consequences: no migration — `SimulatedVehicle` keeps its name and
+  fields ("vehicle" is now historical). The map payload keys
+  (`vehicles`, `vehicle_count`) are unchanged; `wait` now reflects
+  gate truth rather than a parked-forever flag. Auto-selecting a
+  detour never *hides* the blocked route — it remains a selectable
+  option with its full warning, so the closure evidence stays visible.
+  Stale `SIM_VEHICLE_*`/`SIM_QUEUE_VEHICLES` keys in existing `.env`
+  files are ignored.

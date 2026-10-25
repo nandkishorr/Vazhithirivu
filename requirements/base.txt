@@ -7,3 +7,5 @@ osmium==4.3.2
 channels==4.3.2
 channels-redis==4.3.0
 daphne==4.2.3
+django-allauth==65.20.0
+requests==2.34.2

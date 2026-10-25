@@ -55,6 +55,7 @@ def effective_status_payload(effective, now):
     payload["state"] = effective.state
     payload["label"] = status_label(effective.state)["label"]
     payload["simulated"] = effective.simulation is not None
+    payload["inferred"] = effective.inference is not None
     if effective.simulation is not None:
         payload["simulation"] = {
             "run_id": effective.simulation.get("run_id"),
@@ -62,6 +63,14 @@ def effective_status_payload(effective, now):
             "gate_state": effective.simulation.get("gate_state"),
         }
         payload["community_state"] = effective.community.state
+    if effective.inference is not None:
+        payload["inference"] = {
+            "from_crossing_id": effective.inference.get("from_crossing_id"),
+            "from_name": effective.inference.get("from_name") or "",
+            "distance_m": effective.inference.get("distance_m"),
+            "source_state": effective.inference.get("source_state"),
+            "simulated": effective.inference.get("simulated", False),
+        }
     return payload
 
 
@@ -78,6 +87,8 @@ def effective_status_brief(effective, now):
             "simulated",
             "simulation",
             "community_state",
+            "inferred",
+            "inference",
         )
         if key in payload
     }

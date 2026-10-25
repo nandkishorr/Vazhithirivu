@@ -7,6 +7,7 @@ from railways.queries import (
     BBoxError,
     crossings_in_bbox,
     crossings_in_bbox_queryset,
+    crossings_near_point,
     parse_bbox,
 )
 
@@ -127,3 +128,47 @@ class CrossingsInBboxTests(TestCase):
             cursor.execute("SET LOCAL enable_seqscan = off")
             plan = crossings_in_bbox_queryset(BBOX).explain()
         self.assertIn(gist[0], plan)
+
+
+class CrossingsNearPointTests(TestCase):
+    # 0.001° lng ≈ 110 m near Kochi's latitude — enough spread for a
+    # 600 m nearby radius / 300 m alert radius (ADR-017).
+    def test_radius_ordering_and_exclusions(self):
+        near = make_crossing(
+            osm_id=51, location=Point(76.501, 9.5, srid=4326)
+        )
+        mid = make_crossing(
+            osm_id=52, location=Point(76.504, 9.5, srid=4326)
+        )
+        make_crossing(
+            osm_id=53, location=Point(76.51, 9.5, srid=4326)
+        )  # ~1.1 km out
+        make_crossing(
+            osm_id=54,
+            is_active=False,
+            location=Point(76.5001, 9.5, srid=4326),
+        )
+        make_crossing(
+            osm_id=55,
+            is_suppressed=True,
+            location=Point(76.5001, 9.5, srid=4326),
+        )
+        rows = crossings_near_point(9.5, 76.5, 600, 10)
+        self.assertEqual([c.pk for c, _ in rows], [near.pk, mid.pk])
+        distances = [d for _, d in rows]
+        self.assertEqual(distances, sorted(distances))
+        self.assertAlmostEqual(distances[0], 110, delta=30)
+        self.assertAlmostEqual(distances[1], 440, delta=60)
+
+    def test_limit(self):
+        for i in range(3):
+            make_crossing(
+                osm_id=60 + i,
+                location=Point(76.5 + 0.0002 * (i + 1), 9.5, srid=4326),
+            )
+        rows = crossings_near_point(9.5, 76.5, 600, 2)
+        self.assertEqual(len(rows), 2)
+
+    def test_empty_when_nothing_nearby(self):
+        make_crossing(osm_id=70, location=Point(76.51, 9.5, srid=4326))
+        self.assertEqual(crossings_near_point(9.5, 76.5, 500, 10), [])

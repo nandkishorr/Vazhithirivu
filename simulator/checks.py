@@ -35,16 +35,21 @@ def simulator_configuration(app_configs, **kwargs):
             )
         )
     if not (
-        0
-        < settings.SIM_VEHICLE_MIN_SPEED_MPS
-        <= settings.SIM_VEHICLE_MAX_SPEED_MPS
+        settings.SIM_DWELL_RADIUS_M > 0
+        and settings.SIM_DWELL_SECONDS >= 0
+        and settings.SIM_DWELL_MIN_USERS >= 1
+        and settings.SIM_PROMPT_TTL_SECONDS > 0
+        and settings.SIM_QUEUE_GAP_M > 0
+        and settings.SIM_QUEUE_SPACING_M > 0
     ):
         problems.append(
             Error(
-                "Invalid simulator vehicle speeds: expected 0 < "
-                "SIM_VEHICLE_MIN_SPEED_MPS <= SIM_VEHICLE_MAX_SPEED_MPS.",
+                "Invalid simulator inference/queue values: SIM_DWELL_RADIUS_M, "
+                "SIM_PROMPT_TTL_SECONDS, SIM_QUEUE_GAP_M and "
+                "SIM_QUEUE_SPACING_M must be positive, SIM_DWELL_SECONDS "
+                "non-negative, SIM_DWELL_MIN_USERS at least 1.",
                 hint="Fix the SIM_* values in .env (see .env.example).",
-                id="simulator.E003",
+                id="simulator.E004",
             )
         )
     return problems

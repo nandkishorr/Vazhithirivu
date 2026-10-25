@@ -105,6 +105,8 @@
                   <span data-status-variant="stale" hidden>{% status_badge "stale" %}</span>
                   <span data-status-variant="closed_simulated" hidden>{% status_badge "closed_simulated" %}</span>
                   <span data-status-variant="open_simulated" hidden>{% status_badge "open_simulated" %}</span>
+                  <span data-status-variant="closed_inferred" hidden>{% status_badge "closed_inferred" %}</span>
+                  <span data-status-variant="open_inferred" hidden>{% status_badge "open_inferred" %}</span>
                   <span data-status-variant="unknown">{% status_badge "unknown" %}</span>
                   <span data-source-variant="osm" hidden>{% source_badge "osm" %}</span>
                   <span data-source-variant="manual" hidden>{% source_badge "manual" %}</span>
@@ -157,10 +159,14 @@
             <li class="flex items-start gap-2">{% status_badge "unknown" %}<span class="text-xs text-slate-500">No reliable information about this crossing.</span></li>
             <li class="flex items-start gap-2">{% status_badge "stale" %}<span class="text-xs text-slate-500">The last report is too old to rely on.</span></li>
             <li class="flex items-start gap-2">{% status_badge "conflicting" %}<span class="text-xs text-slate-500">Recent reports disagree.</span></li>
+            <li class="flex items-start gap-2">{% status_badge "closed_inferred" %}<span class="text-xs text-slate-500">A consecutive crossing on the same line was marked closed — inferred, not a direct report.</span></li>
+            <li class="flex items-start gap-2">{% status_badge "open_inferred" %}<span class="text-xs text-slate-500">A consecutive crossing on the same line was marked open — inferred, not a direct report.</span></li>
             <li class="flex items-start gap-2">{% status_badge "closed_simulated" %}<span class="text-xs text-slate-500">A demo simulation event — never real-world status.</span></li>
           </ul>
           <p class="mt-2 text-xs text-slate-500">
-            Community reports aren't official railway information. No report never means a
+            On the map, crossings are shown as a level-crossing sign in the
+            status colour with a small state badge. Community reports aren't
+            official railway information. No report never means a
             gate is open.
           </p>
         </section>
@@ -178,6 +184,53 @@
              class="absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-lg bg-violet-600/95 px-3 py-1.5 text-xs font-medium text-white shadow">
           {% icon "flask-conical" class="size-3.5" %}
           <span data-sim-banner-text>Simulation active — demo data</span>
+        </div>
+        <div id="sim-prompts"
+             class="absolute right-3 top-14 z-10 flex w-80 max-w-[calc(100%-1.5rem)] flex-col gap-2"></div>
+        <div id="journey-banner" hidden role="status"
+             class="absolute left-3 top-14 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-lg bg-teal-700/95 px-3 py-1.5 text-xs font-medium text-white shadow">
+          {% icon "navigation" class="size-3.5 shrink-0" %}
+          <span data-journey-banner-text>Journey active — position checked for closed gates, never stored</span>
+          <button type="button" id="journey-end"
+                  class="shrink-0 rounded bg-white/15 px-2 py-0.5 font-semibold hover:bg-white/25">End</button>
+        </div>
+        <div id="journey-alert" hidden role="alert"
+             class="absolute inset-x-3 bottom-44 z-20 mx-auto max-w-md lg:bottom-6">
+          <div class="rounded-xl border border-red-200 bg-white/95 p-3 shadow-lg">
+            <div class="flex items-start gap-2.5">
+              <span class="mt-0.5 shrink-0 text-red-600">{% icon "triangle-alert" class="size-5" %}</span>
+              <div class="min-w-0 flex-1">
+                <p class="text-sm font-semibold text-red-900" data-journey-alert-title>Closed gate ahead</p>
+                <ul class="mt-1 space-y-0.5 text-xs text-red-800" data-journey-alert-list></ul>
+                <p class="mt-1.5 text-[11px] leading-4 text-slate-500" data-journey-alert-note>
+                  Community report — not official railway information.
+                </p>
+              </div>
+              <button type="button" data-journey-alert-dismiss aria-label="Dismiss gate alert"
+                      class="shrink-0 rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+                {% icon "circle-x" class="size-4" %}
+              </button>
+            </div>
+          </div>
+        </div>
+        <div id="journey-confirm" hidden role="alertdialog" aria-labelledby="journey-confirm-title"
+             class="absolute inset-x-3 top-24 z-20 mx-auto max-w-md">
+          <div class="rounded-xl border border-amber-200 bg-white/95 p-4 shadow-lg">
+            <div class="flex items-start gap-2.5">
+              <span class="mt-0.5 shrink-0 text-amber-600">{% icon "triangle-alert" class="size-5" %}</span>
+              <div class="min-w-0 flex-1">
+                <p id="journey-confirm-title" class="text-sm font-semibold text-slate-900" data-journey-confirm-title>A crossing on this route is reported closed</p>
+                <ul class="mt-1 space-y-0.5 text-xs text-slate-700" data-journey-confirm-list></ul>
+                <p class="mt-1.5 text-[11px] leading-4 text-slate-500">
+                  Community reports aren't official railway information. You can pick another route or continue anyway.
+                </p>
+                <div class="mt-3 flex gap-2">
+                  <button type="button" data-journey-confirm-go class="btn-primary flex-1">Continue anyway</button>
+                  <button type="button" data-journey-confirm-cancel class="btn-secondary">Choose another route</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
         <div id="map-loading" class="absolute inset-x-0 top-0 bottom-40 z-10 flex items-center justify-center bg-slate-100 lg:bottom-0">
           {% include "components/spinner.html" with label="Loading map…" %}

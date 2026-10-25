@@ -89,6 +89,9 @@ class SimulationConsumer(AsyncJsonWebsocketConsumer):
     async def sim_run(self, event):
         await self.send_json(event["payload"])
 
+    async def sim_prompt(self, event):
+        await self.send_json(event["payload"])
+
     @database_sync_to_async
     def _snapshot(self, run_id):
         """Resolve the target run and build its snapshot payload."""
@@ -98,9 +101,12 @@ class SimulationConsumer(AsyncJsonWebsocketConsumer):
             run = SimulationRun.objects.filter(pk=run_id).first()
         if run is None:
             return None
-        from .engine import vehicle_frames
+        from .engine import pending_prompts, vehicle_frames
 
         payload = updates.build_snapshot(
-            run, vehicle_frames(run), gate_states_for_run(run)
+            run,
+            vehicle_frames(run),
+            gate_states_for_run(run),
+            pending_prompts(run),
         )
         return updates.group_name(run.pk), payload

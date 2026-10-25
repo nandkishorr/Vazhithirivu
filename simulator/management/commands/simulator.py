@@ -47,7 +47,7 @@ class Command(BaseCommand):
         p = sub.add_parser("start", help="Start a new run (fails if one is active).")
         p.add_argument("--label", default="")
         p.add_argument("--vehicles", type=int, default=None,
-                       help=f"Simulated vehicles (default {settings.SIM_DEFAULT_VEHICLES}, max {settings.SIM_MAX_VEHICLES})")
+                       help=f"Static simulated users parked near crossings (default {settings.SIM_DEFAULT_VEHICLES}, max {settings.SIM_MAX_VEHICLES})")
         p.add_argument("--duration", type=int, default=None,
                        help="Scenario duration in seconds")
         p.add_argument("--tick", type=int, default=None,
@@ -55,13 +55,17 @@ class Command(BaseCommand):
         p.add_argument("--seed", type=int, default=None,
                        help="Deterministic seed (default: random)")
         p.add_argument("--gate", action="append", default=[], metavar="ID:CLOSE[:OPEN]",
-                       help="Close crossing ID at CLOSE tick, reopen at OPEN tick. Repeatable.")
+                       help="Physically close crossing ID at CLOSE tick (parked users count as "
+                            "waiting), reopen at OPEN tick. Repeatable. The status only surfaces "
+                            "after a prompt is confirmed.")
         p.add_argument("--random-gates", type=int, default=0,
                        help="Also close N random crossings")
         p.add_argument("--close-tick", type=int, default=3,
                        help="Tick at which random gates close")
         p.add_argument("--open-tick", type=int, default=30,
                        help="Tick at which random gates reopen")
+        p.add_argument("--auto-confirm", action="store_true",
+                       help="Auto-confirm every raised gate prompt (no web-app click needed)")
         p.add_argument("--force", action="store_true",
                        help="Stop the active run first")
 
@@ -96,6 +100,7 @@ class Command(BaseCommand):
                 seed=options["seed"],
                 tick_seconds=options["tick"],
                 gates=gates,
+                auto_confirm=options["auto_confirm"],
                 force=options["force"],
             )
         except SimulatorError as exc:
@@ -103,7 +108,7 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f"Started run #{run.pk} ({run.label}): "
-                f"{run.vehicle_count} vehicles, "
+                f"{run.vehicle_count} static simulated users, "
                 f"{run.duration_seconds}s at {run.tick_seconds}s/tick, "
                 f"seed {run.seed}, "
                 f"{len(run.config.get('gates') or [])} gate event(s)."
@@ -113,6 +118,17 @@ class Command(BaseCommand):
             self.stdout.write(
                 "No gate events configured — gates stay open. Use "
                 "--gate ID:CLOSE:OPEN or --random-gates N for closures."
+            )
+        elif run.config.get("auto_confirm"):
+            self.stdout.write(
+                "Prompts auto-confirm: simulated gate status appears "
+                "without a web-app click."
+            )
+        else:
+            self.stdout.write(
+                "Confirm prompts in the web app (violet card on the map) "
+                "to mark a gate simulated-closed, or re-run with "
+                "--auto-confirm."
             )
         self.stdout.write(
             "Drive it with the simulator service (docker compose "
@@ -177,7 +193,7 @@ class Command(BaseCommand):
             if summary is None:
                 break
             self.stdout.write(
-                f"tick {summary['tick']}: {summary['vehicles']} vehicles, "
+                f"tick {summary['tick']}: {summary['vehicles']} users, "
                 f"gate changes {summary['gate_changes'] or '[]'}"
                 + (" — finished" if summary["finished"] else "")
             )

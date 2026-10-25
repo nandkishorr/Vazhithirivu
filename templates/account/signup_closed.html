@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% load ui %}
+{% block title %}Signup closed — Vazhithirivu{% endblock %}
+{% block body %}
+<div class="mx-auto flex min-h-dvh max-w-sm flex-col justify-center px-4 py-10">
+  <div class="card">
+    <h1 class="text-lg font-semibold text-slate-900">Signup closed</h1>
+    <p class="mt-2 text-sm text-slate-600">
+      Public username/password signup is closed. Use Google sign-in, or ask
+      an administrator for an account.
+    </p>
+    <a href="{% url 'login' %}" class="btn-secondary mt-4 w-full">Back to sign in</a>
+  </div>
+</div>
+{% endblock %}

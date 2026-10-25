@@ -37,18 +37,18 @@ Prioritize complete vertical slices. Mark each milestone with status, evidence a
 - [x] Realtime status pushes with polling fallback. Evidence: Session 07, `/ws/crossings/` (bounded ID subscriptions, snapshot-on-subscribe, server-derived pushes) + ≤1/min map refresh; ADR-014. Not yet exercised in a real browser.
 
 ## M4 — Opt-in real-user location
-- [x] Explicit permission action (browser-only, click-triggered `getCurrentPosition`; coordinates never leave the browser).
-- [x] Pause/stop sharing (Stop button removes marker/circle and invalidates pending callbacks).
-- [ ] Throttled location updates and session scope.
-- [ ] Privacy controls and expiry/cleanup.
-- [ ] No public exposure of exact location by default.
+- [x] Explicit permission action (browser-only, click-triggered `getCurrentPosition`; journey mode uses `watchPosition` behind a Start button — coordinates only ever leave the browser inside an active session).
+- [x] Pause/stop sharing (Stop button removes marker/circle and invalidates pending callbacks; journey "End" stops the watch and ends the session server-side).
+- [x] Throttled location updates and session scope. Evidence: Session 10, `navigation` app — UUID `JourneySession` capability token, `NAV_MIN_UPDATE_SECONDS` server-side min interval + client distance/time gating, `NAV_SESSION_MAX_HOURS` TTL (ADR-017).
+- [x] Privacy controls and expiry/cleanup. Evidence: session TTL + `purge_navigation_sessions` (`NAV_SESSION_RETENTION_DAYS`); dismissed-alert suppression client-side; session schema holds no coordinates/user/route.
+- [x] No public exposure of exact location by default. Evidence: positions are POST bodies answered transiently — no coordinate columns, no WS channel, nothing echoed back.
 
 ## M5 — Optional simulator — DONE (Session 08, ADR-015)
 - [x] Independent Docker Compose profile/service (`--profile simulation` → `run_simulator`; app works without it).
 - [x] Simulation run IDs and isolated data (`simulator_*` tables, run-scoped, cascade reset; `active_slot` enforces one active run).
-- [x] Deterministic gate cycles (`--seed` + `--gate ID:CLOSE:OPEN` / `--random-gates`).
-- [x] 50–200 simulated vehicles moving through real crossings — on **synthetic** paths perpendicular to the nearest track (no road geometry is imported; labelled as demo).
-- [x] WebSocket updates and client-side animation (`ws/simulation/` coarse ticks + browser interpolation + `/api/simulation/` poll fallback). Not yet exercised in a real browser.
+- [x] Deterministic gate cycles (`--seed` + `--gate ID:CLOSE:OPEN` / `--random-gates`) as the physical schedule; status surfaces only via presence inference → confirmation prompt → human confirm (or `--auto-confirm`). Evidence: Session 10, ADR-018.
+- [x] 1–200 static simulated users parked at real crossings — on **synthetic** approach lines perpendicular to the nearest track (no road geometry is imported; labelled as demo). Users never move (Session 14, ADR-021).
+- [x] WebSocket updates and client-side display (`ws/simulation/` coarse ticks + `/api/simulation/` poll fallback). Not yet exercised in a real browser.
 - [x] Reuse incident/reroute services — registered status overlay (`effective_statuses`); simulated closures block routes through the same verification flow, labelled everywhere.
 - [x] Start/pause/stop/reset + isolation tests proving reports/reference data untouched (48 new tests).
 

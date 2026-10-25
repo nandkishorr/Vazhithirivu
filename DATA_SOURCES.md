@@ -44,6 +44,11 @@ Update this file when a provider or dataset changes. Verify current terms before
 - Verify all route candidates against crossing geometry; use a different routing engine if guaranteed segment exclusions are required.
 - Mock Google services in automated tests; never hit Google APIs in the test suite.
 
+## Google sign-in (OAuth 2.0)
+- `django-allauth` (`allauth.socialaccount.providers.google`) handles the OAuth 2.0 authorization-code flow (ADR-019). Scopes: `openid`, `email`, `profile`. We consume the verified email, `sub` id and name to create/link the Django user; access/refresh tokens are not persisted (`SOCIALACCOUNT_STORE_TOKENS` off).
+- `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET` stay server-side; the client ID is technically public (it appears in Google's authorize URL) but the secret must never reach the browser.
+- The OAuth consent screen and client are configured in Google Cloud Console; authorized redirect URI is `<origin>/accounts/google/login/callback/`.
+
 ## UI assets
 - Lucide icons (https://lucide.dev), ISC license — inline SVG path data in `core/templatetags/ui.py`.
 - Tailwind CSS standalone CLI, pinned version + sha256 (see Dockerfile and RUNBOOK).
@@ -65,8 +70,8 @@ Update this file when a provider or dataset changes. Verify current terms before
 - Simulation status must always be labelled as simulated.
 - Do not infer open status from absence of closure reports.
 
-## Simulation data (Session 08, ADR-015)
-- `simulator_*` tables hold run-scoped demo data only: synthetic vehicle paths (generated through real crossings, perpendicular to the nearest mapped track — not real road or provider geometry), gate events, and an event log.
+## Simulation data (Session 08, ADR-015; static users Session 14, ADR-021)
+- `simulator_*` tables hold run-scoped demo data only: parked simulated users on synthetic approach lines (generated through real crossings, perpendicular to the nearest mapped track — not real road or provider geometry; users never move), gate events, and an event log.
 - Simulated gate states overlay derived status as `closed_simulated`/`open_simulated` **only while a run is active**; every API/WS payload and badge is labelled `simulated` and must never be presented as real traffic or official status.
 - `reset` deletes only simulator-owned rows; community reports, users and OSM reference rows are out of scope by construction (tested).
 

@@ -1,6 +1,6 @@
-"""Engine tests: spawn determinism, ticking, gates, lifecycle."""
+"""Engine tests: spawn determinism, ticking, queues, prompts, lifecycle."""
 from django.contrib.gis.geos import LineString, Point
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from incidents.services import effective_status
 from railways.models import RailwayCrossing, RailwayTrack
@@ -10,6 +10,7 @@ from simulator.models import (
     SimulatedVehicle,
     SimulationEvent,
     SimulationGateEvent,
+    SimulationPrompt,
     SimulationRun,
 )
 from simulator.status import active_run, gate_states_for_run
@@ -83,6 +84,29 @@ class SpawnTests(TestCase):
         self.assertEqual(run.status, SimulationRun.STATUS_FAILED)
         self.assertIsNone(run.active_slot)
 
+    def test_users_park_near_gated_crossing(self):
+        run = engine.start_run(
+            vehicles=8,
+            seed=7,
+            duration_seconds=60,
+            gates=[
+                {
+                    "crossing_id": self.crossing.pk,
+                    "close_tick": 5,
+                    "open_tick": None,
+                }
+            ],
+        )
+        for v in run.vehicles.all():
+            self.assertEqual(v.crossing_id, self.crossing.pk)
+            self.assertFalse(v.waiting)  # parked, not yet "waiting"
+            self.assertEqual(v.speed_mps, 0.0)
+            d = engine._dist_m(
+                (v.position.x, v.position.y),
+                (self.crossing.location.x, self.crossing.location.y),
+            )
+            self.assertLess(d, 60)  # queue slots sit just short of the gate
+
 
 class TickTests(TestCase):
     def setUp(self):
@@ -92,38 +116,27 @@ class TickTests(TestCase):
             vehicles=6, seed=5, duration_seconds=1000, tick_seconds=5
         )
 
-    def test_tick_advances_positions(self):
+    def test_users_never_move(self):
+        """Static simulated users keep their parked position forever."""
         before = {
             v.index: (v.progress_m, tuple(v.position.coords))
             for v in self.run.vehicles.all()
         }
         engine.tick_run(self.run)
+        engine.tick_run(self.run)
         self.run.refresh_from_db()
-        self.assertEqual(self.run.ticks, 1)
-        moved = 0
+        self.assertEqual(self.run.ticks, 2)
         for v in self.run.vehicles.all():
             progress, pos = before[v.index]
-            expected = progress + v.direction * v.speed_mps * 5
-            self.assertAlmostEqual(v.progress_m, expected, places=4)
-            if tuple(v.position.coords) != pos:
-                moved += 1
-        self.assertEqual(moved, len(before))
+            self.assertEqual(v.progress_m, progress)
+            self.assertEqual(tuple(v.position.coords), pos)
 
-    def test_vehicle_bounces_at_path_end(self):
-        v = self.run.vehicles.first()
-        v.progress_m = v.path_length_m - 1
-        v.direction = 1
-        v.speed_mps = 10
-        v.save()
-        engine.tick_run(self.run)
-        v.refresh_from_db()
-        self.assertEqual(v.direction, -1)
-        self.assertLess(v.progress_m, v.path_length_m)
-
-    def test_gate_close_then_open_on_schedule(self):
+    @override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
+    def test_gate_close_waits_users_then_prompt_confirm_open(self):
+        """Physical gate → parked users wait → prompt → confirm → reopen."""
         engine.stop_run(self.run)
         run = engine.start_run(
-            vehicles=3,
+            vehicles=8,
             seed=6,
             duration_seconds=1000,
             tick_seconds=5,
@@ -135,16 +148,52 @@ class TickTests(TestCase):
                 }
             ],
         )
-        engine.tick_run(run)
-        self.assertEqual(
-            engine.gate_states_for_run(run), {}
+        # Every simulated user is parked at the gated crossing.
+        parked = list(run.vehicles.all())
+        self.assertEqual(len(parked), 8)
+        self.assertTrue(
+            all(v.crossing_id == self.crossing.pk for v in parked)
         )
-        engine.tick_run(run)
+        positions = {v.index: tuple(v.position.coords) for v in parked}
+
+        engine.tick_run(run)  # tick 1: gate still open — parked only
+        self.assertEqual(
+            SimulationPrompt.objects.count(), 0
+        )
+        self.assertEqual(gate_states_for_run(run), {})
+        self.assertTrue(
+            all(not v.waiting and v.wait_ticks == 0 for v in parked)
+        )
+
+        engine.tick_run(run)  # tick 2: gate closes → dwell → prompt
+        prompt = SimulationPrompt.objects.get()
+        self.assertEqual(prompt.state, SimulationPrompt.STATE_PENDING)
+        self.assertEqual(prompt.crossing_id, self.crossing.pk)
+        self.assertEqual(prompt.truth_close_tick, 2)
+        self.assertGreaterEqual(len(prompt.waiting_vehicle_indexes), 1)
+        # Parked users count as waiting without ever moving.
+        for v in run.vehicles.all():
+            self.assertTrue(v.waiting)
+            self.assertGreaterEqual(v.wait_ticks, 1)
+            self.assertEqual(
+                tuple(v.position.coords), positions[v.index]
+            )
+        # Unconfirmed: no surfaced status.
+        self.assertEqual(gate_states_for_run(run), {})
+        self.assertEqual(
+            effective_status(self.crossing).state, "unknown"
+        )
+
+        engine.confirm_prompt(prompt, note="test confirm")
         self.assertEqual(
             gate_states_for_run(run), {self.crossing.pk: "closed"}
         )
-        engine.tick_run(run)
-        engine.tick_run(run)
+        self.assertEqual(
+            effective_status(self.crossing).state, "closed_simulated"
+        )
+
+        engine.tick_run(run)  # tick 3: users still parked, still waiting
+        engine.tick_run(run)  # tick 4: physical reopen → auto "open"
         self.assertEqual(
             gate_states_for_run(run), {self.crossing.pk: "open"}
         )
@@ -154,6 +203,13 @@ class TickTests(TestCase):
             )
         )
         self.assertEqual(events, [(2, "closed"), (4, "open")])
+        # The open gate clears the waiting flags; users stay parked.
+        for v in run.vehicles.all():
+            self.assertFalse(v.waiting)
+            self.assertEqual(v.wait_ticks, 0)
+            self.assertEqual(
+                tuple(v.position.coords), positions[v.index]
+            )
 
     def test_run_finishes_at_duration(self):
         engine.stop_run(self.run)
@@ -173,6 +229,142 @@ class TickTests(TestCase):
         result = engine.tick_run(self.run)
         self.assertIsNone(result)
         self.assertEqual(self.run.ticks, 0)
+
+
+class PromptTests(TestCase):
+    def setUp(self):
+        self.crossing = make_crossing()
+        self.track = make_track()
+
+    def _gated_run(self, open_tick=None, auto=False, **kwargs):
+        kwargs.setdefault("vehicles", 8)
+        kwargs.setdefault("seed", 42)
+        kwargs.setdefault("duration_seconds", 1000)
+        kwargs.setdefault("tick_seconds", 5)
+        return engine.start_run(
+            gates=[
+                {
+                    "crossing_id": self.crossing.pk,
+                    "close_tick": 1,
+                    "open_tick": open_tick,
+                }
+            ],
+            auto_confirm=auto,
+            **kwargs,
+        )
+
+    @override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
+    def test_prompt_raised_once_per_closure(self):
+        run = self._gated_run()
+        engine.tick_run(run)
+        self.assertEqual(SimulationPrompt.objects.count(), 1)
+        engine.tick_run(run)
+        # No second prompt for the same closure cycle.
+        self.assertEqual(SimulationPrompt.objects.count(), 1)
+        prompt = SimulationPrompt.objects.get()
+        self.assertEqual(prompt.state, "pending")
+
+    @override_settings(
+        SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100, SIM_DWELL_MIN_USERS=99
+    )
+    def test_min_users_not_met_no_prompt(self):
+        run = self._gated_run()
+        engine.tick_run(run)
+        engine.tick_run(run)
+        self.assertEqual(SimulationPrompt.objects.count(), 0)
+
+    @override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
+    def test_dwell_counter_resets_when_gate_reopens(self):
+        run = self._gated_run(open_tick=3)
+        engine.tick_run(run)  # close_tick=1 → parked users wait
+        v = run.vehicles.first()
+        v.refresh_from_db()
+        self.assertTrue(v.waiting)
+        self.assertGreaterEqual(v.wait_ticks, 1)
+        pos = tuple(v.position.coords)
+        engine.tick_run(run)
+        engine.tick_run(run)  # reopen tick
+        v.refresh_from_db()
+        self.assertFalse(v.waiting)
+        self.assertEqual(v.wait_ticks, 0)
+        # Static users never move — same parked spot throughout.
+        self.assertEqual(tuple(v.position.coords), pos)
+
+    @override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
+    def test_dismiss_prompt_surfaces_nothing(self):
+        run = self._gated_run()
+        engine.tick_run(run)
+        prompt = SimulationPrompt.objects.get()
+        engine.dismiss_prompt(prompt)
+        self.assertEqual(prompt.state, "dismissed")
+        self.assertEqual(gate_states_for_run(run), {})
+        self.assertEqual(
+            effective_status(self.crossing).state, "unknown"
+        )
+        with self.assertRaises(SimulatorError):
+            engine.confirm_prompt(prompt)
+
+    @override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
+    def test_confirm_twice_fails(self):
+        run = self._gated_run()
+        engine.tick_run(run)
+        prompt = SimulationPrompt.objects.get()
+        engine.confirm_prompt(prompt)
+        with self.assertRaises(SimulatorError):
+            engine.confirm_prompt(prompt)
+
+    @override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
+    def test_prompt_ttl_expires(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        run = self._gated_run()
+        engine.tick_run(run)
+        prompt = SimulationPrompt.objects.get()
+        later = timezone.now() + timedelta(
+            seconds=600 + 1  # > SIM_PROMPT_TTL_SECONDS
+        )
+        engine.tick_run(run, now=later)
+        prompt.refresh_from_db()
+        self.assertEqual(prompt.state, "expired")
+
+    @override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
+    def test_gate_reopen_expires_unanswered_prompt(self):
+        run = self._gated_run(open_tick=3)
+        engine.tick_run(run)
+        prompt = SimulationPrompt.objects.get()
+        engine.tick_run(run)
+        engine.tick_run(run)  # reopen tick
+        prompt.refresh_from_db()
+        self.assertEqual(prompt.state, "expired")
+        self.assertIn("reopened", prompt.resolved_note)
+        # Nobody confirmed → nothing ever surfaced.
+        self.assertEqual(SimulationGateEvent.objects.count(), 0)
+
+    @override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
+    def test_stop_run_expires_pending_prompt(self):
+        run = self._gated_run()
+        engine.tick_run(run)
+        prompt = SimulationPrompt.objects.get()
+        engine.stop_run(run)
+        prompt.refresh_from_db()
+        self.assertEqual(prompt.state, "expired")
+
+    @override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
+    def test_auto_confirm_writes_gate_event(self):
+        run = self._gated_run(open_tick=3, auto=True)
+        engine.tick_run(run)
+        self.assertEqual(
+            gate_states_for_run(run), {self.crossing.pk: "closed"}
+        )
+        prompt = SimulationPrompt.objects.get()
+        self.assertEqual(prompt.state, "confirmed")
+        engine.tick_run(run)
+        engine.tick_run(run)  # reopen
+        self.assertEqual(
+            gate_states_for_run(run), {self.crossing.pk: "open"}
+        )
 
 
 class LifecycleTests(TestCase):

@@ -74,6 +74,22 @@ Flags: `--batch-size` (default 2000), `--crossing-values`/`--track-values`
 container), `--bbox minlon,minlat,maxlon,maxlat`, `--reconcile`,
 `--max-deactivate-fraction` (default 0.2), `--dry-run`, `--source-url`.
 
+### Same-line crossing links (ADR-020)
+Every successful (non-dry-run) import ends by rebuilding
+`CrossingLink` — each crossing's nearest `RAILWAY_LINK_MAX_NEIGHBORS`
+(3) neighbours along the connected track network, used for
+`closed_inferred`/`open_inferred` propagation and neighbour WS
+republishes. Rebuild manually after admin corrections or setting
+changes:
+
+```bash
+docker compose run --rm web python manage.py link_crossings
+# optional: --max-neighbors N --snap-tolerance-m M --max-distance-m M
+```
+
+Crossings farther than `RAILWAY_LINK_SNAP_M` (30 m) from any track
+vertex get no links and simply never infer.
+
 ### Refresh / reconciliation
 - Re-running on the same or a newer extract is safe and idempotent
   (`(osm_type, osm_id)` upserts; `first_seen_run`/`last_seen_run` track
@@ -123,7 +139,7 @@ identical run created 0 and updated 127/330. Table sizes: crossings 176 kB,
 tracks 496 kB. A full southern-zone or India import (no bbox) is not yet measured.
 
 ## Community crossing reports
-- Sign-in: interim Django auth at `/accounts/login/` / `/accounts/logout/` (Google sign-in comes later). Create a reporter/admin user with:
+- Sign-in: `/accounts/login/` offers **Sign in with Google** when `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET` are set (ADR-019), plus a username/password form for administrator-created accounts. Public local signup is closed. Logout is `POST /accounts/logout/`. Create a reporter/admin user with:
   ```bash
   docker compose run --rm web python manage.py createsuperuser
   ```
@@ -139,11 +155,43 @@ tracks 496 kB. A full southern-zone or India import (no bbox) is not yet measure
   ```
 
 ## Simulation
-An optional, isolated demo simulator (Session 08, ADR-015). All state lives
-in `simulator_*` tables scoped to a `SimulationRun`; it never writes
-`CrossingReport` rows or mutates `railways` reference rows, and every
-payload/badge is labelled simulated. The app is fully functional with the
-simulator stopped.
+An optional, isolated demo simulator (Session 08 ADR-015, presence
+inference added Session 10 ADR-018, static users Session 14 ADR-021).
+All state lives in `simulator_*`
+tables scoped to a `SimulationRun`; it never writes `CrossingReport`
+rows or mutates `railways` reference rows, and every payload/badge is
+labelled simulated. The app is fully functional with the simulator
+stopped.
+
+### How a gate becomes "closed" (the demo story)
+`--gate ID:CLOSE[:OPEN]` describes the **physical** world, not the
+status. Simulated *users* are **static** (ADR-021): every one spawns
+already parked in a queue slot on an approach to a crossing —
+round-robin across the run's gated crossings — and never moves. When a
+gate physically closes, the parked users at that crossing count as
+*waiting* (their pins darken).
+
+Presence inference watches those users: when at least
+`SIM_DWELL_MIN_USERS` of them stay within `SIM_DWELL_RADIUS_M` of the
+crossing for `SIM_DWELL_SECONDS`, a `SimulationPrompt` is raised and
+broadcast (`sim.prompt` over the WS + listed in `/api/simulation/` and
+the snapshot). The web app shows a violet confirmation card:
+
+- **Confirm gate closed** → `POST /api/simulation/prompts/<id>/confirm/`
+  writes the `SimulationGateEvent` — *only now* does the crossing gain
+  `closed_simulated` status, which blocks routes exactly like a
+  community report (the reroute warning + verified-alternative flow
+  runs unchanged).
+- **Dismiss** → `POST /api/simulation/prompts/<id>/dismiss/`; nothing is
+  surfaced and the same closure never re-prompts.
+- Ignored prompts expire after `SIM_PROMPT_TTL_SECONDS`, when the gate
+  reopens, or when the run ends.
+
+When the physical gate reopens after a *confirmed* closure, an `open`
+event is surfaced automatically (the waiting pins clear — users stay
+parked, no second confirmation). For a no-click demo pass
+`--auto-confirm` to `simulator start` — every raised prompt is
+confirmed instantly through the same code path.
 
 ### Service (optional)
 ```bash
@@ -159,8 +207,8 @@ a run manually with `manage.py simulator tick`.
 ```bash
 docker compose exec web python manage.py simulator start \
   --vehicles 60 --duration 600 --seed 42 \
-  --gate 8:3:60            # crossing 8 closes at tick 3, reopens at 60
-docker compose exec web python manage.py simulator start --random-gates 2
+  --gate 8:3:60            # crossing 8's gate closes at tick 3, reopens at 60
+docker compose exec web python manage.py simulator start --random-gates 2 --auto-confirm
 docker compose exec web python manage.py simulator status
 docker compose exec web python manage.py simulator pause / resume / stop
 docker compose exec web python manage.py simulator tick --n 10   # manual drive
@@ -170,41 +218,45 @@ docker compose exec web python manage.py simulator reset          # deletes ALL 
   run may be `running`/`paused` (DB-enforced `active_slot`).
 - `--gate ID:CLOSE[:OPEN]` (repeatable); `--random-gates N` picks crossings
   seeded by `--seed`; gate ticks are 5 s apart by default (`--tick`).
+- `--auto-confirm` skips the web-app click (status surfaces on its own).
 - `reset` refuses while a run is active; it deletes **only**
   `simulator_*` rows (verified against community reports and OSM rows in
   `simulator/tests/test_isolation.py`).
 
 ### What it does
-- Spawns N vehicles (default 60, max `SIM_MAX_VEHICLES` 200) on synthetic
-  paths through real mapped crossings (perpendicular to the nearest
-  track — demo geometry, not real road data).
-- Emits gate open/close `SimulationGateEvent`s on schedule; the latest
-  event in the *active* run overlays the derived status as
+- Spawns N static simulated users (default 60, max `SIM_MAX_VEHICLES`
+  200) parked at queue slots near real mapped crossings — slot offsets
+  are `SIM_QUEUE_GAP_M` + `SIM_QUEUE_SPACING_M` apart along a synthetic
+  road line perpendicular to the nearest track (demo geometry, not
+  real road data). Users never move (ADR-021).
+- Confirmed closures overlay the derived status as
   `closed_simulated`/`open_simulated` (violet badges, never presented as
   community or official data). A community `closed_reported` always
   outranks a simulated gate.
-- Simulated closures block routes exactly like reported ones
-  (`routing.services` verification flow unchanged), so a route planned
-  through a simulated-closed crossing shows the warning + alternative
-  evaluation — the demo scenario.
-- Positions/gates push over `ws(s)://<host>/ws/simulation/` (snapshot +
-  coarse `sim.tick` frames; browser interpolates between ticks —
-  no per-frame tasks). `GET /api/simulation/` returns the same state for
-  polling fallback. Stopping/finishing a run ends the overlay and
-  republishes affected crossings.
+- Positions/gates/prompts push over `ws(s)://<host>/ws/simulation/`
+  (snapshot + coarse `sim.tick` frames; positions are constant — the
+  payload `wait` flag is what darkens a user's pin). `GET
+  /api/simulation/` returns the same state for polling fallback.
+  Stopping/finishing a run ends the overlay, expires pending prompts,
+  and republishes affected crossings.
 
-### Demo scenario (live-verified Session 08)
+### Demo scenario
 ```bash
 docker compose --profile simulation up -d simulator
 docker compose exec web python manage.py simulator start \
   --vehicles 60 --seed 42 --duration 600 --gate 8:3:60
-# open http://localhost:8000 — violet banner + vehicle markers;
-# crossing 8's pin shows "Simulated closed" until tick 60.
+# open http://localhost:8000 — violet banner + static users parked at
+# crossing 8; their pins darken from tick 3 (gate physically closed);
+# ~SIM_DWELL_SECONDS later a "Simulated gate check" card pops up.
+# Click "Confirm gate closed" → crossing 8 shows "Simulated closed"
+# and routes through it get the reroute warning + verified
+# alternative (auto-selected — ADR-021).
 docker compose exec web python manage.py simulator reset
 docker compose --profile simulation stop simulator
 ```
 Without Redis the sim WebSocket frames can't cross from the `simulator`
-container to `web` — the `/api/simulation/` polling fallback still works.
+container to `web` — the `/api/simulation/` polling fallback still works
+(prompts arrive and can be confirmed there too).
 
 ## Realtime status pushes (Session 07, ADR-014)
 - Compose services: `redis` (`redis:7-alpine`, health-checked) starts with `docker compose up -d`. `web` gets `REDIS_URL=redis://redis:6379/0` and waits for redis. Redis backs the Channels layer **and** the default Django cache (also makes the routing throttle shared across workers).
@@ -224,9 +276,36 @@ container to `web` — the `/api/simulation/` polling fallback still works.
   Expect `101 Switching Protocols` (the socket then waits for a subscribe message). Behind a reverse proxy, forward `Upgrade`/`Connection` headers and use `wss://`.
 - Browser smoke addition: with the map open, report a crossing closed from another tab/user — the pin should turn red ✕ within a second or two, without moving the map.
 
+## Journey sessions (navigation app, ADR-017)
+Opt-in "Start journey" sessions scope live position checks for closed-gate
+alerts; turn-by-turn itself is handed to Google Maps (`Open in Google Maps`
+button → `https://www.google.com/maps/dir/?api=1&…`, which picks its own
+path — never presented as identical to our planned route).
+
+- `POST /api/navigation/sessions/` → `201 {session:{id,started_at,expires_at,ended}, config:{alert_radius_m,nearby_radius_m,min_update_seconds,min_update_distance_m}}`. Per-client throttle `NAV_MAX_SESSIONS_PER_HOUR` → `429 {"error":"rate_limited"}`. CSRF required (`X-CSRFToken` + `csrftoken` cookie — the home page always sets one via `@ensure_csrf_cookie`).
+- `POST /api/navigation/sessions/<uuid>/position/` body `{"lat":…,"lng":…}` → `200 {as_of,alert_radius_m,nearby_radius_m,crossings:[{id,name,lat,lng,distance_m,alert,status}],alerts:[…]}`. `crossings` = active crossings inside `NAV_NEARBY_RADIUS_M` (capped at `NAV_NEARBY_LIMIT`, nearest first); `alerts` = those inside `NAV_ALERT_RADIUS_M` with a blocking status (`closed_reported`/`closed_simulated`). Min interval `NAV_MIN_UPDATE_SECONDS` → `429 {"error":"too_fast","retry_after_seconds"}`; unknown id → 404; ended or expired (`NAV_SESSION_MAX_HOURS`) → `410 {"error":"session_ended"}`; bad input → `400 invalid_json`/`invalid_position`. **Coordinates are never stored** — the session row only gains `last_position_check_at`.
+- `POST /api/navigation/sessions/<uuid>/end/` → `{"ended":true}` (idempotent); checks after end → 410.
+- Retention purge (manual/cron, like reports):
+  ```bash
+  docker compose run --rm web python manage.py purge_navigation_sessions --dry-run
+  docker compose run --rm web python manage.py purge_navigation_sessions        # NAV_SESSION_RETENTION_DAYS
+  ```
+- Frontend: "Start journey" on a route panel starts `watchPosition` (explicit opt-in, HTTPS/localhost) — teal position marker, `journey-banner` with an End button, throttled checks; a red popup lists closed gates inside the alert radius and tags ones on the selected route. If the route already shows a blocking crossing, a warning card lists it before Start journey or Open in Google Maps proceeds.
+- Smoke (stack up):
+  ```bash
+  curl -i -X POST -b "csrftoken=$C" -H "X-CSRFToken: $C" localhost:8000/api/navigation/sessions/
+  curl -X POST -b "csrftoken=$C" -H "X-CSRFToken: $C" -H "Content-Type: application/json" \
+    -d '{"lat":10.0,"lng":76.3}' localhost:8000/api/navigation/sessions/<uuid>/position/
+  ```
+
 ## Google Maps
 - The map needs `GOOGLE_MAPS_BROWSER_KEY` (Maps JavaScript API + Places API (New) + Geocoding API; restrict by HTTP referrer and those APIs) and `GOOGLE_MAPS_MAP_ID` (Maps Management / Map Styles in Cloud Console; needed for cloud styling and AdvancedMarkerElement pins). `GOOGLE_MAPS_SERVER_KEY` powers route planning via the Routes API — never expose it to the browser.
 - Blank values are OK: the app boots, `core.W001`/`core.W002` warnings are emitted, and the map region shows a not-configured (DEBUG) or generic unavailable state.
+
+### Google sign-in (OAuth)
+- Optional: without `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET` the app boots normally and the Google button is hidden; setting only one of them emits `core.W003`.
+- Setup: Google Cloud Console → **APIs & Services → OAuth consent screen** (External, basic scopes `openid`, `email`, `profile`) → **Credentials → Create OAuth client ID** of type **Web application**. Add the authorized redirect URI `<origin>/accounts/google/login/callback/` (e.g. `http://localhost:8000/accounts/google/login/callback/`; add the https origin in production). Same project as the Maps keys is fine; no additional APIs need enabling.
+- Flow: `/accounts/login/` → POST to `/accounts/google/login/` → Google consent → callback → user created/linked by verified email → redirect to `next` or home. First sign-in creates the user; a matching verified email links to the existing account.
 
 ### Routes API server key (route planning)
 1. In Google Cloud Console, enable the **Routes API** for the project.

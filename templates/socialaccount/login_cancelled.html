@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% load ui %}
+{% block title %}Sign-in cancelled — Vazhithirivu{% endblock %}
+{% block body %}
+<div class="mx-auto flex min-h-dvh max-w-sm flex-col justify-center px-4 py-10">
+  <div class="card">
+    <h1 class="text-lg font-semibold text-slate-900">Sign-in cancelled</h1>
+    <p class="mt-2 text-sm text-slate-600">
+      You cancelled the Google sign-in. No account was created or changed.
+    </p>
+    <a href="{% url 'login' %}" class="btn-secondary mt-4 w-full">Back to sign in</a>
+  </div>
+</div>
+{% endblock %}

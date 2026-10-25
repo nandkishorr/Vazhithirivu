@@ -35,6 +35,19 @@ def routing_configuration(app_configs, **kwargs):
                 id="routing.E002",
             )
         )
+    if getattr(settings, "ROUTE_DETOUR_ENABLED", False) and (
+        getattr(settings, "ROUTE_DETOUR_VIA_OFFSET_M", 0) <= 0
+        or not (0 < getattr(settings, "ROUTE_DETOUR_MAX_CALLS", 0) <= 4)
+    ):
+        problems.append(
+            Error(
+                "Invalid detour settings: expected "
+                "ROUTE_DETOUR_VIA_OFFSET_M > 0 and "
+                "0 < ROUTE_DETOUR_MAX_CALLS <= 4.",
+                hint="Adjust the ROUTE_DETOUR_* settings (see .env.example).",
+                id="routing.E003",
+            )
+        )
     if not getattr(settings, "GOOGLE_MAPS_SERVER_KEY", ""):
         problems.append(
             Warning(

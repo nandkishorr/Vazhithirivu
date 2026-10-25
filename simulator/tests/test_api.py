@@ -1,11 +1,11 @@
 """HTTP surface: /api/simulation/ and sim labels in the crossings API."""
 from django.contrib.gis.geos import LineString, Point
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from railways.models import RailwayCrossing, RailwayTrack
 from simulator import engine
-from simulator.models import SimulationGateEvent
+from simulator.models import SimulationGateEvent, SimulationPrompt
 
 LNG, LAT = 76.30, 10.00
 
@@ -55,6 +55,93 @@ class SimulationApiTests(TestCase):
         engine.stop_run(run)
         data = self.client.get(reverse("api_simulation_state")).json()
         self.assertFalse(data["active"])
+
+
+@override_settings(SIM_DWELL_SECONDS=0, SIM_DWELL_RADIUS_M=100)
+class SimulationPromptApiTests(TestCase):
+    def setUp(self):
+        self.crossing = make_crossing()
+        make_track()
+        self.run = engine.start_run(
+            vehicles=8,
+            seed=41,
+            duration_seconds=600,
+            tick_seconds=5,
+            gates=[
+                {
+                    "crossing_id": self.crossing.pk,
+                    "close_tick": 1,
+                    "open_tick": None,
+                }
+            ],
+        )
+        engine.tick_run(self.run)
+        self.prompt = SimulationPrompt.objects.get()
+
+    def _confirm(self):
+        return self.client.post(
+            reverse("api_simulation_prompt_confirm", args=[self.prompt.pk])
+        )
+
+    def _dismiss(self):
+        return self.client.post(
+            reverse("api_simulation_prompt_dismiss", args=[self.prompt.pk])
+        )
+
+    def test_state_payload_lists_pending_prompt(self):
+        data = self.client.get(reverse("api_simulation_state")).json()
+        self.assertEqual(len(data["prompts"]), 1)
+        prompt = data["prompts"][0]
+        self.assertEqual(prompt["id"], self.prompt.pk)
+        self.assertEqual(prompt["crossing_id"], self.crossing.pk)
+        self.assertGreaterEqual(prompt["waiting_users"], 1)
+        self.assertEqual(prompt["state"], "pending")
+        self.assertTrue(prompt["simulated"])
+        self.assertIn("confirm", prompt["confirm_url"])
+        self.assertIn("dismiss", prompt["dismiss_url"])
+
+    def test_confirm_marks_gate_simulated_closed(self):
+        response = self._confirm()
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["prompt"]["state"], "confirmed")
+        self.assertEqual(
+            body["gates"], {str(self.crossing.pk): "closed"}
+        )
+        event = SimulationGateEvent.objects.get()
+        self.assertEqual(event.gate_state, "closed")
+        # The shared status endpoint shows the confirmed closure.
+        status = self.client.get(
+            reverse("api_crossing_status", args=[self.crossing.pk])
+        ).json()["status"]
+        self.assertEqual(status["state"], "closed_simulated")
+        # No pending prompts remain in the polling payload.
+        data = self.client.get(reverse("api_simulation_state")).json()
+        self.assertEqual(data["prompts"], [])
+
+    def test_confirm_twice_is_conflict(self):
+        self._confirm()
+        response = self._confirm()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"], "not_resolvable")
+
+    def test_dismiss_keeps_gate_unsurfaced(self):
+        response = self._dismiss()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["prompt"]["state"], "dismissed")
+        self.assertEqual(SimulationGateEvent.objects.count(), 0)
+
+    def test_unknown_prompt_404(self):
+        response = self.client.post(
+            reverse("api_simulation_prompt_confirm", args=[99999])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_get_method_not_allowed(self):
+        response = self.client.get(
+            reverse("api_simulation_prompt_confirm", args=[self.prompt.pk])
+        )
+        self.assertEqual(response.status_code, 405)
 
 
 class BboxSimLabelTests(TestCase):

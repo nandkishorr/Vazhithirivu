@@ -23,3 +23,13 @@ def _publish(crossing_id):
     from . import updates
 
     updates.publish_crossing_status(crossing_id)
+    # A status change also changes the *inferred* state of the
+    # consecutive crossings on the same line (ADR-020) — republish
+    # those too. Push fingerprints suppress no-op sends.
+    from railways.models import CrossingLink
+
+    neighbour_ids = CrossingLink.objects.filter(
+        to_crossing_id=crossing_id
+    ).values_list("from_crossing_id", flat=True)
+    for neighbour_id in neighbour_ids:
+        updates.publish_crossing_status(neighbour_id)

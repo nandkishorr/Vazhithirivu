@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load ui %}
+{% load ui socialaccount %}
 {% block title %}Sign in — Vazhithirivu{% endblock %}
 {% block body %}
 <div class="mx-auto flex min-h-dvh max-w-sm flex-col justify-center px-4 py-10">
@@ -15,7 +15,23 @@
       </div>
     {% endif %}
 
-    <form method="post" action="{% url 'login' %}" class="mt-4 flex flex-col gap-3">
+    {% if GOOGLE_OAUTH_ENABLED %}
+      <form method="post" action="{% provider_login_url "google" %}" class="mt-4">
+        {% csrf_token %}
+        <button type="submit" class="btn-secondary w-full">
+          <svg viewBox="0 0 24 24" class="size-5" aria-hidden="true" focusable="false"><path fill="#4285F4" d="M23.5 12.27c0-.85-.08-1.66-.21-2.45H12v4.64h6.45c-.28 1.5-1.12 2.77-2.4 3.62l3.73 2.89c2.18-2.01 3.72-4.98 3.72-8.7Z"/><path fill="#34A853" d="M12 23.5c2.96 0 5.46-.98 7.28-2.65l-3.73-2.89c-1 .68-2.3 1.08-3.55 1.08-2.97 0-5.38-1.98-6.23-4.47l-3.66 2.84C3.99 21.05 7.7 23.5 12 23.5Z"/><path fill="#FBBC05" d="M5.77 14.57a7.2 7.2 0 0 1 0-5.14L2.11 6.59a11.5 11.5 0 0 0 0 10.82l3.66-2.84Z"/><path fill="#EA4335" d="M12 5.04c1.62 0 3.06.56 4.2 1.64l3.12-3.12C17.46 1.8 14.96.5 12 .5 7.7.5 3.99 2.95 2.11 6.59l3.66 2.84C6.62 7.02 9.03 5.04 12 5.04Z"/></svg>
+          Sign in with Google
+        </button>
+      </form>
+
+      <div class="my-4 flex items-center gap-3 text-xs text-slate-400" aria-hidden="true">
+        <span class="h-px flex-1 bg-slate-200"></span>
+        or with an administrator account
+        <span class="h-px flex-1 bg-slate-200"></span>
+      </div>
+    {% endif %}
+
+    <form method="post" action="{% url 'login' %}" class="{% if not GOOGLE_OAUTH_ENABLED %}mt-4{% endif %} flex flex-col gap-3">
       {% csrf_token %}
       <div class="field">
         <label class="field-label" for="{{ form.username.id_for_label }}">Username</label>
@@ -34,8 +50,14 @@
     </form>
 
     <p class="mt-4 text-xs text-slate-500">
-      Google sign-in is coming later; accounts are currently created by an
-      administrator.
+      {% if GOOGLE_OAUTH_ENABLED %}
+        Google sign-in creates an account automatically; an existing
+        account with the same verified Google email is used instead.
+        Username/password accounts are created by an administrator.
+      {% else %}
+        Google sign-in is not configured; accounts are currently created
+        by an administrator.
+      {% endif %}
     </p>
   </div>
 </div>

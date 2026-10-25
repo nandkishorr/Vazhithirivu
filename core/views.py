@@ -7,6 +7,7 @@ from django.http import Http404, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
 from django.views.decorators.cache import never_cache
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_safe
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,9 @@ def _waypoint(place_id, address, lat_raw=None, lng_raw=None):
     )
 
 
+# The journey API uses POSTs from anonymous sessions, so the page must
+# always carry a csrf cookie for the double-submit check (ADR-017).
+@ensure_csrf_cookie
 @require_safe
 def home(request):
     destination = request.GET.get("destination")
@@ -111,6 +115,13 @@ def home(request):
             "simulationUrl": reverse("api_simulation_state"),
             "simulationWsUrl": "%s://%s/ws/simulation/"
             % ("wss" if request.is_secure() else "ws", request.get_host()),
+            # Journey sessions (ADR-017): the session URL template keeps
+            # a placeholder UUID the client replaces with the real id.
+            "navigationStartUrl": reverse("api_navigation_start"),
+            "navigationSessionUrlTemplate": reverse(
+                "api_navigation_position",
+                args=["00000000-0000-0000-0000-000000000000"],
+            ).replace("/position/", "/"),
         }
         from railways.models import RailwayCrossing
 
@@ -175,6 +186,7 @@ def _route_data(plan):
                 "description": route.candidate.description or "",
                 "distance_km": route.candidate.distance_km,
                 "duration_min": route.candidate.duration_min,
+                "synthesized": route.candidate.synthesized,
                 "coords": coords,
                 "crossings": [
                     {
@@ -192,6 +204,9 @@ def _route_data(plan):
         )
     return {
         "routes": routes,
+        # The route the map selects first — a verified alternative when
+        # the primary is blocked (ADR-021), else "r0".
+        "selected": plan.preferred_route_id,
         "blocking": [
             e.crossing.name or "Unnamed level crossing" for e in plan.blocking
         ],

@@ -47,10 +47,12 @@ class FakeProvider:
         self._error = error
         self.calls = 0
 
-    def compute_routes(self, origin, destination):
+    def compute_routes(self, origin, destination, intermediates=None):
         self.calls += 1
         self.last_origin = origin
         self.last_destination = destination
+        if intermediates:
+            return []
         if self._error:
             raise self._error
         return list(self._routes)
@@ -108,6 +110,16 @@ class RouteViewTests(TestCase):
         self.assertContains(response, 'data-route-panel="r0"')
         self.assertContains(response, "not official railway information")
         self.assertContains(response, "without live traffic")
+        # The verified alternative is pre-selected, not the blocked
+        # primary (ADR-021): r1's panel is the visible one and the map
+        # payload selects it.
+        self.assertContains(response, '"selected": "r1"')
+        self.assertContains(
+            response, 'data-route-panel="r0" hidden', count=1
+        )
+        self.assertContains(
+            response, 'data-route-panel="r1"', count=1
+        )
 
     def test_alternatives_selectable_without_blocking(self):
         """With no closed crossing, alternates are still selectable."""
@@ -123,6 +135,8 @@ class RouteViewTests(TestCase):
         self.assertContains(response, 'data-route-panel="r1"')
         self.assertContains(response, "Recommended")
         self.assertContains(response, "+4 min")
+        # No blocking → the primary stays the selected route.
+        self.assertContains(response, '"selected": "r0"')
 
     def test_unverified_alternative_no_avoidance_claim(self):
         self._closed_report()
@@ -253,6 +267,17 @@ class RouteViewTests(TestCase):
         )
         self.assertEqual(provider.calls, 1)
         self.assertEqual(provider.last_origin.lat, 10.0261)
+
+    def test_journey_buttons_rendered_per_route(self):
+        provider = FakeProvider(
+            [candidate(0, ew()), candidate(1, ew(0.00135), labels=())]
+        )
+        response = self._get(provider)
+        self.assertContains(response, 'data-journey-start="r0"')
+        self.assertContains(response, 'data-journey-start="r1"')
+        self.assertContains(response, 'data-journey-nav="r0"')
+        self.assertContains(response, "Start journey")
+        self.assertContains(response, "Open in Google Maps")
 
     def test_format_json_returns_html_and_route_data(self):
         provider = FakeProvider([candidate(0, ew())])

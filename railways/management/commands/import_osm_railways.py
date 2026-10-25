@@ -122,3 +122,15 @@ class Command(BaseCommand):
                     f"{reason}={n}" for reason, n in sorted(c["skipped"].items())
                 )
             )
+
+        # Refresh the same-line topology so propagation sees the new data.
+        if result.run_id is not None and result.status == "succeeded":
+            from railways.topology import rebuild_crossing_links
+
+            link_counts = rebuild_crossing_links()
+            self.stdout.write(
+                "  crossing links rebuilt: "
+                + ", ".join(
+                    f"{k}={v}" for k, v in link_counts.items()
+                )
+            )

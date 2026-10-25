@@ -47,7 +47,9 @@ class FakeProvider:
     def __init__(self, routes):
         self._routes = routes
 
-    def compute_routes(self, origin, destination):
+    def compute_routes(self, origin, destination, intermediates=None):
+        if intermediates:
+            return []
         return list(self._routes)
 
 

@@ -1,11 +1,13 @@
-"""Bounded spatial queries for the map UI (ADR-012).
+"""Bounded spatial queries for the map UI (ADR-012) and navigation
+position checks (ADR-017).
 
 Crossing lookups are always limited to an explicit, size-capped
-bounding box so the map endpoint stays cheap and indexed.
+bounding box or radius so endpoints stay cheap and indexed.
 """
 import math
 
 from django.contrib.gis.geos import Polygon
+from django.db import connection
 
 from .models import RailwayCrossing
 
@@ -84,3 +86,37 @@ def crossings_in_bbox(bbox, limit):
     """Return ``(crossings[:limit], truncated)`` for ``bbox``."""
     rows = list(crossings_in_bbox_queryset(bbox)[: limit + 1])
     return rows[:limit], len(rows) > limit
+
+
+def crossings_near_point(lat, lng, radius_m, limit):
+    """Active crossings within ``radius_m`` of (lat, lng), nearest first.
+
+    Geography distances in metres (same convention as
+    ``routing.analysis``). Returns ``[(crossing, distance_m), …]``
+    capped at ``limit`` — a position check always stays bounded.
+    Two queries: ids/distances, then the model rows.
+    """
+    sql = """
+        SELECT c.id,
+               ST_Distance(
+                   c.location::geography,
+                   ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography
+               ) AS distance_m
+        FROM railways_railwaycrossing c
+        WHERE c.is_active
+          AND NOT c.is_suppressed
+          AND ST_DWithin(
+              c.location::geography,
+              ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
+              %s
+          )
+        ORDER BY distance_m
+        LIMIT %s
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(sql, [lng, lat, lng, lat, radius_m, limit])
+        rows = cursor.fetchall()
+    crossings = RailwayCrossing.objects.in_bulk(row[0] for row in rows)
+    return [
+        (crossings[row[0]], row[1]) for row in rows if row[0] in crossings
+    ]

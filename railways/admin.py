@@ -1,7 +1,12 @@
 from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
 
-from .models import OsmImportRun, RailwayCrossing, RailwayTrack
+from .models import (
+    CrossingLink,
+    OsmImportRun,
+    RailwayCrossing,
+    RailwayTrack,
+)
 
 _OSM_DERIVED_COMMON = (
     "source",
@@ -59,6 +64,25 @@ class RailwayTrackAdmin(_OsmFeatureAdmin):
         "usage",
         "service",
     )
+
+
+@admin.register(CrossingLink)
+class CrossingLinkAdmin(admin.ModelAdmin):
+    """Derived same-line topology — rebuilt, never hand-edited."""
+
+    list_display = ("id", "from_crossing", "to_crossing", "rank", "distance_m")
+    list_filter = ("rank",)
+    search_fields = ("=from_crossing__id", "=to_crossing__id")
+    ordering = ("from_crossing_id", "rank")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(OsmImportRun)

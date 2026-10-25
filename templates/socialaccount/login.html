@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% load ui socialaccount %}
+{% block title %}Sign in with {{ provider.name }} — Vazhithirivu{% endblock %}
+{% block body %}
+<div class="mx-auto flex min-h-dvh max-w-sm flex-col justify-center px-4 py-10">
+  <div class="card">
+    <h1 class="text-lg font-semibold text-slate-900">
+      {% if process == "connect" %}Connect {{ provider.name }}{% else %}Sign in with {{ provider.name }}{% endif %}
+    </h1>
+    <p class="mt-2 text-sm text-slate-600">
+      {% if process == "connect" %}
+        You are about to connect your {{ provider.name }} account.
+      {% else %}
+        You are about to sign in using your {{ provider.name }} account.
+      {% endif %}
+    </p>
+    <form method="post" class="mt-4">
+      {% csrf_token %}
+      <button type="submit" class="btn-primary w-full">Continue</button>
+    </form>
+    <a href="{% url 'login' %}" class="btn-ghost mt-2 w-full">Cancel</a>
+  </div>
+</div>
+{% endblock %}

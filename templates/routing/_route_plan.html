@@ -10,16 +10,18 @@
       <div class="mt-3 space-y-1.5" role="group" aria-label="Route options">
         {% for route in route_plan.routes %}
           <button type="button" data-route-select="{{ route.id }}" data-route-option="{{ route.id }}"
-                  aria-pressed="{% if route.is_primary %}true{% else %}false{% endif %}"
+                  aria-pressed="{% if route.id == route_plan.preferred_route_id %}true{% else %}false{% endif %}"
+                  {% if route.id == route_plan.preferred_route_id %}data-selected{% endif %}
                   class="flex w-full items-baseline justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:border-brand-300 hover:bg-brand-50/40 data-[selected]:border-brand-600 data-[selected]:bg-brand-50 data-[selected]:ring-1 data-[selected]:ring-brand-600/40">
             <span>
               <span class="font-semibold text-slate-900">Route {{ forloop.counter }}</span>
               {% if route.candidate.distance_m %}· {{ route.candidate.distance_km }} km{% endif %}
               {% if route.candidate.duration_s %}· about {{ route.candidate.duration_min }} min{% endif %}
               {% if route.candidate.description %}<span class="text-slate-500"> via {{ route.candidate.description }}</span>{% endif %}
+              {% if route.candidate.synthesized %}<span class="text-slate-400"> · detour suggestion</span>{% endif %}
             </span>
             <span class="shrink-0 text-xs font-medium text-slate-500">
-              {% if route.is_primary %}Recommended{% elif route.delta_duration_s is not None or route.delta_distance_m is not None %}{{ route.delta_label }}{% endif %}
+              {% if route.id == route_plan.preferred_route_id %}Recommended{% elif route.is_primary and route_plan.warning_level == "closed_on_route" %}Closed gate on route{% elif route.is_primary and route_plan.warning_level == "closed_near_route" %}Closed gate near route{% elif route.delta_duration_s is not None or route.delta_distance_m is not None %}{{ route.delta_label }}{% endif %}
             </span>
           </button>
         {% endfor %}
@@ -27,7 +29,7 @@
     {% endif %}
 
     {% for route in route_plan.routes %}
-      <div class="card mt-3" data-route-panel="{{ route.id }}" {% if not route.is_primary %}hidden{% endif %}>
+      <div class="card mt-3" data-route-panel="{{ route.id }}" {% if route.id != route_plan.preferred_route_id %}hidden{% endif %}>
         <div class="flex flex-wrap items-baseline gap-x-2">
           <p class="text-base font-bold text-slate-900">
             {% if route.candidate.distance_m %}{{ route.candidate.distance_km }} km{% endif %}
@@ -51,6 +53,8 @@
           <div class="mt-2 space-y-1">
             {% if route_plan.blocking_all_simulated %}
               {% include "components/alert.html" with variant="error" title="Crossing closed on your route (simulated demo)" %}
+            {% elif route_plan.blocking_all_inferred %}
+              {% include "components/alert.html" with variant="error" title="Crossing likely closed on your route (same line)" %}
             {% else %}
               {% include "components/alert.html" with variant="error" title="Reported closed on your route" %}
             {% endif %}
@@ -61,6 +65,8 @@
                   at {{ entry.crossing.along_km }} km along the route.
                   {% if entry.status.simulated %}
                     Simulated gate closure — demo data, not a real-world report.
+                  {% elif entry.status.inferred %}
+                    Likely closed — a crossing on the same line was marked closed. Inference, not a direct report.
                   {% else %}
                     Community report {{ entry.status.age }} — not official railway information.
                   {% endif %}
@@ -72,13 +78,15 @@
           <div class="mt-2 space-y-1">
             {% if route_plan.blocking_all_simulated %}
               {% include "components/alert.html" with variant="warning" title="A simulated-closed crossing is near this route" body="It may be on the route — treat with caution. Demo data, not real-world status." %}
+            {% elif route_plan.blocking_all_inferred %}
+              {% include "components/alert.html" with variant="warning" title="A likely-closed crossing is near this route" body="Inferred from a closure on the same line — it may be on the route. Not a direct report." %}
             {% else %}
               {% include "components/alert.html" with variant="warning" title="A crossing reported closed is near this route" body="It may be on the route — treat with caution. Community reports aren't official railway information." %}
             {% endif %}
             {% for entry in route_plan.blocking %}
               <p class="text-xs text-slate-600">
                 {{ entry.crossing.name|default:"Unnamed level crossing" }} — near the route at {{ entry.crossing.along_km }} km,
-                {% if entry.status.simulated %}simulated closure (demo){% else %}reported {{ entry.status.age }}{% endif %}.
+                {% if entry.status.simulated %}simulated closure (demo){% elif entry.status.inferred %}likely closed (same-line inference){% else %}reported {{ entry.status.age }}{% endif %}.
               </p>
             {% endfor %}
           </div>
@@ -91,7 +99,7 @@
         {% if route.crossings %}
           <p class="mt-3 text-xs font-medium text-slate-700">
             {{ route.crossings|length }} mapped crossing{{ route.crossings|length|pluralize }} on this route
-            {% for state, count in route.counts.items %}· {{ count }} {{ state|cut:"_reported"|cut:"_simulated" }}{% if "_simulated" in state %} (simulated){% endif %}{% endfor %}
+            {% for state, count in route.counts.items %}· {{ count }} {{ state|cut:"_reported"|cut:"_simulated"|cut:"_inferred" }}{% if "_simulated" in state %} (simulated){% elif "_inferred" in state %} (inferred){% endif %}{% endfor %}
           </p>
           <ul class="mt-1.5 divide-y divide-slate-100">
             {% for entry in route.crossings %}
@@ -116,6 +124,19 @@
           Only crossings mapped in OpenStreetMap are checked; unmapped crossings may exist.
         </p>
 
+        <div class="mt-3 space-y-2">
+          <button type="button" data-journey-start="{{ route.id }}" class="btn-primary w-full">
+            {% icon "navigation" class="size-4" %} Start journey — watch for closed gates
+          </button>
+          <button type="button" data-journey-nav="{{ route.id }}" class="btn-secondary w-full">
+            {% icon "external-link" class="size-4" %} Open in Google Maps
+          </button>
+          <p class="text-xs text-slate-400">
+            Turn-by-turn navigation runs in Google Maps; closed-gate alerts
+            need journey mode on this page.
+          </p>
+        </div>
+
         {% if not route.is_primary %}
           <button type="button" data-route-select="r0" class="btn-secondary mt-3 w-full">Back to Route 1</button>
         {% endif %}
@@ -129,7 +150,7 @@
             {% if route.verification == "verified" %}
               <div class="card border-sky-200 bg-sky-50">
                 <p class="text-sm font-semibold text-sky-900">
-                  Alternative route avoids {{ route_plan.blocking_names }}
+                  {% if route.candidate.synthesized %}Suggested detour{% else %}Alternative route{% endif %} avoids {{ route_plan.blocking_names }}
                 </p>
                 <p class="mt-0.5 text-xs text-sky-800">
                   {% if route.delta_duration_s is not None or route.delta_distance_m is not None %}

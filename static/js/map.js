@@ -40,11 +40,50 @@
     }
   }
 
+  const ROUTE_FIELD_PICKERS = [
+    ["origin-picker", "id_origin", "id_origin_place_id", true],
+    ["destination-picker", "id_destination", "id_destination_place_id", false],
+  ];
+
+  // gmpx-place-picker has no form name and typed-but-unselected text is
+  // not a Place, so it would submit as empty. Sync the visible text into
+  // the hidden fields; if it was edited after a pick, drop the stale
+  // place id. Shared by form submit, dynamic reroute and the Google
+  // Maps handoff — a typed custom source works everywhere "My location"
+  // does.
+  function syncRouteFields() {
+    ROUTE_FIELD_PICKERS.forEach(([pickerId, inputId, hiddenId]) => {
+      const picker = document.getElementById(pickerId);
+      const input = document.getElementById(inputId);
+      const hidden = document.getElementById(hiddenId);
+      if (!picker || !input || !hidden) return;
+      const text = pickerText(picker);
+      if (text !== input.value) {
+        input.value = text;
+        hidden.value = "";
+      }
+    });
+    // A custom source supersedes a "My location" fix: never send stale
+    // origin coords alongside a typed place — the server prefers coords
+    // over the address and would route from the old fix. Mirrors the
+    // form-submit handling in app.js.
+    const originInput = document.getElementById("id_origin");
+    const originText = originInput ? originInput.value.trim() : "";
+    if (originText && originText !== "My location") {
+      const latEl = document.getElementById("id_origin_lat");
+      const lngEl = document.getElementById("id_origin_lng");
+      if (latEl && latEl.value) {
+        latEl.value = "";
+        if (lngEl) lngEl.value = "";
+        if (window.vz && window.vz.clearMyLocation) {
+          window.vz.clearMyLocation();
+        }
+      }
+    }
+  }
+
   function setupPlacePickers(map) {
-    const fields = [
-      ["origin-picker", "id_origin", "id_origin_place_id", true],
-      ["destination-picker", "id_destination", "id_destination_place_id", false],
-    ];
+    const fields = ROUTE_FIELD_PICKERS;
     fields.forEach(([pickerId, inputId, hiddenId, isOrigin]) => {
       const picker = document.getElementById(pickerId);
       const input = document.getElementById(inputId);
@@ -76,29 +115,16 @@
       });
     });
 
-    // gmpx-place-picker has no form name and typed-but-unselected text is
-    // not a Place, so it would submit as empty. Sync the visible text on
-    // submit; if it was edited after a pick, drop the stale place id.
     const form = document.getElementById("route-form");
     if (form) {
-      form.addEventListener("submit", () => {
-        fields.forEach(([pickerId, inputId, hiddenId]) => {
-          const picker = document.getElementById(pickerId);
-          const input = document.getElementById(inputId);
-          const hidden = document.getElementById(hiddenId);
-          if (!picker || !input || !hidden) return;
-          const text = pickerText(picker);
-          if (text !== input.value) {
-            input.value = text;
-            hidden.value = "";
-          }
-        });
-      });
+      form.addEventListener("submit", syncRouteFields);
     }
   }
 
   // --- Crossing markers ------------------------------------------------------
-  // Status colouring always pairs a colour with a glyph (non-colour cue).
+  // Markers are a level-crossing warning sign: a status-coloured diamond
+  // band around the road/track pictogram, plus a small status badge with
+  // a glyph so state never relies on colour alone.
   // Unknown/no-report states must never use green.
   const STATE_STYLE = {
     closed_reported: { color: "#dc2626", border: "#991b1b", glyph: "\u2715" },
@@ -109,8 +135,77 @@
     // Simulated states are violet (demo data) and always labelled.
     closed_simulated: { color: "#7c3aed", border: "#5b21b6", glyph: "\u2715" },
     open_simulated: { color: "#7c3aed", border: "#5b21b6", glyph: "\u2713" },
+    // Same-line inference keeps the reported colour with a "≈" glyph —
+    // it is never a direct report for that crossing (ADR-020).
+    closed_inferred: { color: "#dc2626", border: "#991b1b", glyph: "≈" },
+    open_inferred: { color: "#0d9488", border: "#115e59", glyph: "≈" },
   };
-  const LEGACY_ICON_SCALE = 8;
+  // Icon geometry: 44x40 viewBox; the anchor is the diamond's bottom tip.
+  const CROSSING_ICON = { w: 44, h: 40, tipX: 21, tipY: 35.3 };
+  const CROSSING_ANCHOR_LEFT = "-47.7%";
+  const CROSSING_ANCHOR_TOP = "-88.3%";
+
+  function crossingSignSvg(style, scale) {
+    const s = scale || 1;
+    const w = Math.round(CROSSING_ICON.w * s * 10) / 10;
+    const h = Math.round(CROSSING_ICON.h * s * 10) / 10;
+    const ink = "#0f172a";
+    return (
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 40" ' +
+      'width="' + w + '" height="' + h + '" style="display:block" aria-hidden="true">' +
+      '<ellipse cx="21" cy="37.8" rx="9" ry="2" fill="rgba(15,23,42,0.22)"/>' +
+      '<rect x="9.5" y="7.5" width="23" height="23" rx="4.5" fill="' +
+        style.color + '" stroke="' + style.border + '" stroke-width="0.8" ' +
+        'transform="rotate(45 21 19)"/>' +
+      '<rect x="11.6" y="9.6" width="18.8" height="18.8" rx="3.2" fill="#fff" ' +
+        'transform="rotate(45 21 19)"/>' +
+      '<rect x="13.9" y="11.9" width="14.2" height="14.2" rx="2.4" fill="none" ' +
+        'stroke="' + style.color + '" stroke-width="1.1" ' +
+        'transform="rotate(45 21 19)"/>' +
+      '<g fill="' + ink + '">' +
+      '<rect x="19.2" y="9.9" width="3.6" height="6.1" rx="0.4"/>' +
+      '<rect x="19.2" y="22.2" width="3.6" height="6.1" rx="0.4"/>' +
+      "</g>" +
+      '<g stroke="' + ink + '" stroke-width="1.7" stroke-linecap="round">' +
+      '<line x1="16.05" y1="25.65" x2="27.65" y2="15.05"/>' +
+      '<line x1="14.35" y1="22.95" x2="24.95" y2="12.35"/>' +
+      "</g>" +
+      '<g stroke="' + ink + '" stroke-width="2" stroke-linecap="round">' +
+      '<line x1="15.36" y1="21.14" x2="18.86" y2="24.64"/>' +
+      '<line x1="17.31" y1="19.19" x2="20.81" y2="22.69"/>' +
+      '<line x1="19.25" y1="17.25" x2="22.75" y2="20.75"/>' +
+      '<line x1="21.19" y1="15.31" x2="24.69" y2="18.81"/>' +
+      '<line x1="23.14" y1="13.36" x2="26.64" y2="16.86"/>' +
+      "</g>" +
+      '<circle cx="34.8" cy="7.5" r="6.2" fill="' + style.color +
+        '" stroke="#fff" stroke-width="1.8"/>' +
+      (style.dot
+        ? ""
+        : '<text x="34.8" y="7.5" text-anchor="middle" ' +
+          'dominant-baseline="central" ' +
+          'font-family="Arial, Helvetica, sans-serif" font-size="9" ' +
+          'font-weight="700" fill="#fff">' + style.glyph + "</text>") +
+      "</svg>"
+    );
+  }
+
+  // The same icon as a data URI for the legacy (no Map ID) Marker path.
+  function crossingIconUrl(style, scale) {
+    return (
+      "data:image/svg+xml;charset=UTF-8," +
+      encodeURIComponent(crossingSignSvg(style, scale))
+    );
+  }
+
+  // Wrapper div used as AdvancedMarkerElement content; the transform
+  // origin sits on the diamond tip so selected scaling stays anchored.
+  function crossingSignEl(style, scale) {
+    const el = document.createElement("div");
+    el.style.transformOrigin = "47.7% 88.3%";
+    if (!reducedMotion) el.style.transition = "transform .15s ease";
+    el.innerHTML = crossingSignSvg(style, scale);
+    return el;
+  }
 
   function setupCrossingMarkers(map, markerLib) {
     const emptyEl = document.getElementById("crossing-empty");
@@ -150,6 +245,8 @@
       "unknown",
       "closed_simulated",
       "open_simulated",
+      "closed_inferred",
+      "open_inferred",
     ];
 
     function urlFor(template, id) {
@@ -216,6 +313,27 @@
           );
         case "open_simulated":
           return "Simulated open gate (demo) — not a real-world report.";
+        case "closed_inferred":
+        case "open_inferred": {
+          const inf = payload.inference || {};
+          const direction =
+            status.state === "closed_inferred" ? "closed" : "open";
+          const where =
+            typeof inf.distance_m === "number"
+              ? " about " + Math.round(inf.distance_m) + " m along the track"
+              : " on the same line";
+          return (
+            "Likely " +
+            direction +
+            " — " +
+            (inf.from_name || "A crossing") +
+            where +
+            " was marked " +
+            direction +
+            (inf.simulated ? " by the simulation (demo)." : ".") +
+            " Inferred — no direct report for this crossing."
+          );
+        }
         case "conflicting": {
           const support = status.supporting_reports || 0;
           const oppose = status.opposing_reports || 0;
@@ -315,7 +433,9 @@
       const suffix =
         c.status && c.status.simulated
           ? " (simulation demo, not real-world status)"
-          : " (community reports, not official)";
+          : c.status && c.status.inferred
+            ? " (inferred from a same-line crossing, not a direct report)"
+            : " (community reports, not official)";
       return (
         (c.name || "Level crossing") + " \u2014 " + label + suffix
       );
@@ -325,27 +445,23 @@
       const style = STATE_STYLE[entry.state] || STATE_STYLE.unknown;
       const selected = entry.id === selectedId;
       const title = markerTitle(entry.data || {});
-      if (entry.pin) {
-        entry.pin.background = style.color;
-        entry.pin.borderColor = style.border;
-        entry.pin.glyph = style.glyph;
-        entry.pin.glyphColor = "#fff";
-        entry.pin.scale = selected ? 1.3 : 1;
+      if (entry.el) {
+        entry.el.innerHTML = crossingSignSvg(style);
+        entry.el.style.transform = selected ? "scale(1.18)" : "";
         entry.marker.title = title;
         entry.marker.zIndex = selected ? 1000 : undefined;
       } else {
+        const scale = selected ? 1.15 : 1;
         entry.marker.setIcon({
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: selected ? LEGACY_ICON_SCALE * 1.3 : LEGACY_ICON_SCALE,
-          fillColor: style.color,
-          fillOpacity: 1,
-          strokeColor: "#fff",
-          strokeWeight: 2,
-        });
-        entry.marker.setLabel({
-          text: style.glyph,
-          color: "#fff",
-          fontSize: "11px",
+          url: crossingIconUrl(style),
+          scaledSize: new google.maps.Size(
+            CROSSING_ICON.w * scale,
+            CROSSING_ICON.h * scale
+          ),
+          anchor: new google.maps.Point(
+            CROSSING_ICON.tipX * scale,
+            CROSSING_ICON.tipY * scale
+          ),
         });
         entry.marker.setTitle(title);
         entry.marker.setZIndex(selected ? 1000 : undefined);
@@ -449,7 +565,7 @@
       const entry = {
         id: c.id,
         marker: null,
-        pin: null,
+        el: null,
         data: c,
         state: normalizeState(c.status && c.status.state),
       };
@@ -458,19 +574,15 @@
         showDetail(current ? current.data : c);
       };
       if (useAdvanced) {
-        const style = STATE_STYLE[entry.state];
-        entry.pin = new markerLib.PinElement({
-          background: style.color,
-          borderColor: style.border,
-          glyphColor: "#fff",
-          glyph: style.glyph,
-        });
+        entry.el = crossingSignEl(STATE_STYLE[entry.state]);
         entry.marker = new markerLib.AdvancedMarkerElement({
           map: map,
           position: position,
           title: markerTitle(c),
-          content: entry.pin.element,
+          content: entry.el,
           gmpClickable: true,
+          anchorLeft: CROSSING_ANCHOR_LEFT,
+          anchorTop: CROSSING_ANCHOR_TOP,
         });
         entry.marker.addListener("gmp-click", onSelect);
       } else {
@@ -483,7 +595,7 @@
 
     // AdvancedMarkerElement uses the `map` property; legacy Marker needs setMap().
     function setMarkerMap(entry, target) {
-      if (entry.pin) {
+      if (entry.el) {
         if (entry.marker.map !== target) entry.marker.map = target;
       } else if (entry.marker.getMap() !== target) {
         entry.marker.setMap(target);
@@ -950,6 +1062,7 @@
             closed_reported: "Reported closed",
             conflicting: "Conflicting reports",
             closed_simulated: "Simulated closed",
+            closed_inferred: "Likely closed (same line)",
           };
           if (!(c.state in ROUTE_STATE_LABEL)) return;
           const style = STATE_STYLE[c.state] || STATE_STYLE.unknown;
@@ -962,20 +1075,15 @@
               ? " (simulation demo, not real-world status)"
               : " (community reports, not official)");
           if (useAdvanced) {
-            const pin = new markerLib.PinElement({
-              background: style.color,
-              borderColor: style.border,
-              glyphColor: "#fff",
-              glyph: style.glyph,
-              scale: 0.8,
-            });
             routeMarkers.push({
               advanced: true,
               ref: new markerLib.AdvancedMarkerElement({
                 map: map,
                 position: position,
                 title: title,
-                content: pin.element,
+                content: crossingSignEl(style, 0.78),
+                anchorLeft: CROSSING_ANCHOR_LEFT,
+                anchorTop: CROSSING_ANCHOR_TOP,
               }),
             });
           } else {
@@ -986,14 +1094,16 @@
                 position: position,
                 title: title,
                 icon: {
-                  path: google.maps.SymbolPath.CIRCLE,
-                  scale: LEGACY_ICON_SCALE * 0.8,
-                  fillColor: style.color,
-                  fillOpacity: 1,
-                  strokeColor: "#fff",
-                  strokeWeight: 2,
+                  url: crossingIconUrl(style, 0.78),
+                  scaledSize: new google.maps.Size(
+                    CROSSING_ICON.w * 0.78,
+                    CROSSING_ICON.h * 0.78
+                  ),
+                  anchor: new google.maps.Point(
+                    CROSSING_ICON.tipX * 0.78,
+                    CROSSING_ICON.tipY * 0.78
+                  ),
                 },
-                label: { text: style.glyph, color: "#fff", fontSize: "10px" },
               }),
             });
           }
@@ -1018,7 +1128,11 @@
       const prev = selectedId;
       selectedId = id;
       polylines.forEach((entry, routeId) => {
-        entry.line.setOptions(styleFor(routeId, routeId === id));
+        entry.line.setOptions(
+          Object.assign(styleFor(routeId, routeId === id), {
+            visible: routeId === id,
+          })
+        );
         entry.casing.setOptions({ visible: routeId === id });
       });
       document.querySelectorAll("[data-route-option]").forEach((btn) => {
@@ -1065,6 +1179,14 @@
       selectedId = "r0";
       if (!currentData) return;
       blockingNames = (currentData.blocking || []).join(", ");
+      // The server pre-selects a verified detour when the primary route
+      // is blocked by a closed gate (ADR-021); otherwise "r0".
+      if (
+        currentData.selected &&
+        currentData.routes.some((r) => r.id === currentData.selected)
+      ) {
+        selectedId = currentData.selected;
+      }
 
       currentData.routes.forEach((route) => {
         if (!route.coords || route.coords.length < 2) return;
@@ -1086,7 +1208,8 @@
         const line = new google.maps.Polyline(
           Object.assign(
             { map: map, path: path, clickable: true },
-            styleFor(route.id, isSelected)
+            styleFor(route.id, isSelected),
+            { visible: isSelected }
           )
         );
         line.addListener("click", () => {
@@ -1102,7 +1225,15 @@
 
       addEndpointMarkers();
       addRouteCrossingMarkers();
-      fitTo(selectedId);
+      if (selectedId !== "r0" && polylines.has(selectedId)) {
+        // A verified detour is pre-selected: restyle, show its panel,
+        // fit the map and announce why it was chosen.
+        selectRoute(selectedId);
+      } else {
+        if (!polylines.has(selectedId)) selectedId = "r0";
+        showPanel(selectedId);
+        fitTo(selectedId);
+      }
     }
 
     // --- Dynamic reroute ---------------------------------------------------
@@ -1163,6 +1294,9 @@
     }
 
     function reroute() {
+      // A typed-but-unselected custom source/destination only lives in
+      // the picker's text box — sync it into the hidden fields first.
+      syncRouteFields();
       const params = new URLSearchParams();
       [
         "origin",
@@ -1236,6 +1370,14 @@
     window.vz.rerouteToDestination = goToDestination;
     window.vz.reroute = function () {
       ensureOriginThen(reroute);
+    };
+    // Let the journey layer correlate alerts with a route's crossings.
+    window.vz.routeDataFor = function (routeId) {
+      if (!currentData) return null;
+      if (routeId) {
+        return currentData.routes.find((r) => r.id === routeId) || null;
+      }
+      return currentData.routes.find((r) => r.id === selectedId) || null;
     };
 
     function pinnedText(lat, lng) {
@@ -1335,13 +1477,138 @@
       if (!bannerEl) return;
       if (bannerText) {
         bannerText.textContent =
-          text || "Simulation active — vehicles & gates are demo data";
+          text || "Simulation active — simulated users & gates are demo data";
       }
       bannerEl.hidden = false;
     }
 
     function hideBanner() {
       if (bannerEl) bannerEl.hidden = true;
+    }
+
+    // --- Gate-closure confirmation prompts (ADR-018) ------------------
+    // Presence inference raises a prompt; a human click is what turns a
+    // queued crossing into "Simulated closed" for routing.
+    const promptBox = document.getElementById("sim-prompts");
+    const promptCards = new Map();
+
+    function removePrompt(id) {
+      const card = promptCards.get(id);
+      if (card) card.remove();
+      promptCards.delete(id);
+    }
+
+    function resolvePrompt(p, url, card) {
+      const buttons = card.querySelectorAll("button");
+      buttons.forEach((b) => {
+        b.disabled = true;
+      });
+      const errEl = card.querySelector("[data-sim-prompt-error]");
+      fetch(url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      })
+        .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+        .then((body) => {
+          removePrompt(p.id);
+          // Apply the confirmed gate state immediately — the next
+          // sim.tick and crossing push will confirm it server-side.
+          if (body && body.gates) {
+            applyGates(body.gates, new Date().toISOString());
+          }
+        })
+        .catch(() => {
+          buttons.forEach((b) => {
+            b.disabled = false;
+          });
+          if (errEl) errEl.hidden = false;
+        });
+    }
+
+    function addPrompt(p) {
+      if (!promptBox || !p || p.id == null || promptCards.has(p.id)) return;
+      const card = document.createElement("div");
+      card.className =
+        "rounded-lg bg-white/95 p-3 text-left shadow-lg ring-1 ring-violet-500/50";
+      card.setAttribute("role", "alert");
+
+      const head = document.createElement("p");
+      head.className = "text-xs font-semibold text-violet-800";
+      head.textContent = "Simulated gate check";
+      card.appendChild(head);
+
+      const body = document.createElement("p");
+      body.className = "mt-1 text-xs leading-5 text-slate-700";
+      const n = Math.max(1, p.waiting_users || 0);
+      body.textContent =
+        n +
+        " simulated user" +
+        (n === 1 ? " is" : "s are") +
+        " stopped near " +
+        (p.crossing_name || "a level crossing") +
+        " — is the gate closed?";
+      card.appendChild(body);
+
+      const note = document.createElement("p");
+      note.className = "mt-1 text-[11px] leading-4 text-slate-400";
+      note.textContent =
+        "Demo data. Confirming marks this crossing Simulated closed " +
+        "and routes around it.";
+      card.appendChild(note);
+
+      const err = document.createElement("p");
+      err.hidden = true;
+      err.setAttribute("data-sim-prompt-error", "");
+      err.className = "mt-1 text-[11px] text-red-600";
+      err.textContent = "Couldn't save that — try again.";
+      card.appendChild(err);
+
+      const row = document.createElement("div");
+      row.className = "mt-2 flex gap-2";
+      const confirmBtn = document.createElement("button");
+      confirmBtn.type = "button";
+      confirmBtn.className =
+        "flex-1 rounded-md bg-violet-600 px-3 py-1.5 text-xs font-medium " +
+        "text-white hover:bg-violet-700 disabled:cursor-not-allowed " +
+        "disabled:opacity-50";
+      confirmBtn.textContent = "Confirm gate closed";
+      confirmBtn.addEventListener("click", () => {
+        resolvePrompt(p, p.confirm_url, card);
+      });
+      const dismissBtn = document.createElement("button");
+      dismissBtn.type = "button";
+      dismissBtn.className =
+        "rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs " +
+        "font-medium text-slate-600 hover:bg-slate-50 " +
+        "disabled:cursor-not-allowed disabled:opacity-50";
+      dismissBtn.textContent = "Dismiss";
+      dismissBtn.addEventListener("click", () => {
+        resolvePrompt(p, p.dismiss_url, card);
+      });
+      row.appendChild(confirmBtn);
+      row.appendChild(dismissBtn);
+      card.appendChild(row);
+
+      promptBox.appendChild(card);
+      promptCards.set(p.id, card);
+    }
+
+    function reconcilePrompts(list) {
+      const seen = new Set();
+      (list || []).forEach((p) => {
+        if (!p || p.id == null) return;
+        seen.add(p.id);
+        addPrompt(p);
+      });
+      Array.from(promptCards.keys()).forEach((id) => {
+        if (!seen.has(id)) removePrompt(id);
+      });
+    }
+
+    function clearPrompts() {
+      promptCards.forEach((card) => card.remove());
+      promptCards.clear();
     }
 
     function arrowGlyph(dir) {
@@ -1370,7 +1637,7 @@
 
     function makeVehicle(v) {
       const title =
-        (v.label || "Simulated vehicle") + " — simulated, demo data";
+        (v.label || "Simulated user") + " — simulated, demo data";
       const entry = { id: v.id, pin: null, marker: null, from: null, to: null, t0: 0, t1: 0 };
       const pos = { lat: v.lat, lng: v.lng };
       if (window.vz.hasMapId && markerLib.AdvancedMarkerElement) {
@@ -1449,7 +1716,17 @@
         entry.to = [v.lat, v.lng];
         entry.t0 = nowMs;
         entry.t1 = nowMs + intervalMs;
-        if (entry.pin) entry.pin.glyph = arrowGlyph(v.dir);
+        const title =
+          (v.label || "Simulated user") +
+          (v.wait ? " — waiting at a gate" : "") +
+          " — simulated, demo data";
+        if (entry.pin) {
+          entry.pin.glyph = arrowGlyph(v.dir);
+          entry.pin.background = v.wait ? "#4c1d95" : SIM_COLOR;
+          entry.marker.title = title;
+        } else {
+          entry.marker.setTitle(title);
+        }
       });
       vehicles.forEach((entry, id) => {
         if (!seen.has(id)) {
@@ -1487,6 +1764,7 @@
       vehicles.forEach((entry) => setVehicleMap(entry, null));
       vehicles.clear();
       hideBanner();
+      clearPrompts();
       if (window.vz.requestCrossingLoad) {
         // Gates reverted server-side; fetch fresh effective statuses now.
         window.vz.requestCrossingLoad(true);
@@ -1505,6 +1783,13 @@
           showBanner();
           upsertVehicles(msg.vehicles, tickMs);
           applyGates(msg.gates, msg.at);
+          reconcilePrompts(msg.prompts);
+          break;
+        case "sim.prompt":
+          if (msg.prompt) addPrompt(msg.prompt);
+          break;
+        case "sim.prompt.resolved":
+          removePrompt(msg.prompt_id);
           break;
         case "sim.run.started":
           showBanner();
@@ -1602,6 +1887,7 @@
               run: body.run,
               vehicles: body.vehicles,
               gates: body.gates,
+              prompts: body.prompts,
               at: body.as_of,
             });
           } else {
@@ -1635,6 +1921,524 @@
     // One immediate poll so an already-running sim shows up fast even
     // while the socket handshake is in flight.
     pollOnce();
+  }
+
+  // --- Journey mode (ADR-017) -----------------------------------------
+  // "Start journey" begins an opt-in session: the browser watches the
+  // user's position and POSTs throttled checks to the session API — the
+  // positions answer one proximity query each and are never stored
+  // server-side. A popup appears whenever a reported/simulated-closed
+  // crossing sits inside the alert radius. "Open in Google Maps" hands
+  // turn-by-turn to Google Maps via the universal directions URL.
+  const NAV_SESSION_PLACEHOLDER =
+    "00000000-0000-0000-0000-00000000000000000000";
+  const NAV_ALERT_STATES = [
+    "closed_reported",
+    "closed_simulated",
+    "closed_inferred",
+  ];
+
+  function setupJourney(map, markerLib) {
+    const bannerEl = document.getElementById("journey-banner");
+    const alertEl = document.getElementById("journey-alert");
+    const confirmEl = document.getElementById("journey-confirm");
+    const endBtn = document.getElementById("journey-end");
+    if (!bannerEl || !alertEl || !confirmEl) return;
+    if (!cfg.navigationStartUrl || !cfg.navigationSessionUrlTemplate) {
+      return;
+    }
+
+    const alertTitle = alertEl.querySelector("[data-journey-alert-title]");
+    const alertList = alertEl.querySelector("[data-journey-alert-list]");
+    const alertNote = alertEl.querySelector("[data-journey-alert-note]");
+    const alertDismiss = alertEl.querySelector("[data-journey-alert-dismiss]");
+    const confirmTitle = confirmEl.querySelector("[data-journey-confirm-title]");
+    const confirmList = confirmEl.querySelector("[data-journey-confirm-list]");
+    const confirmGo = confirmEl.querySelector("[data-journey-confirm-go]");
+    const confirmCancel = confirmEl.querySelector("[data-journey-confirm-cancel]");
+
+    const journey = {
+      sessionId: null,
+      watchId: null,
+      marker: null,
+      pin: null,
+      checkCtl: null,
+      lastCheckAt: 0,
+      lastCheckPos: null,
+      lastAlerts: [],
+      dismissed: new Set(),
+      confirmAction: null,
+      config: { min_update_seconds: 10, min_update_distance_m: 25 },
+    };
+
+    function csrfToken() {
+      const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+      return match ? decodeURIComponent(match[1]) : "";
+    }
+
+    function postJson(url, body, signal) {
+      return fetch(url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": csrfToken(),
+          Accept: "application/json",
+        },
+        body: JSON.stringify(body || {}),
+        signal: signal,
+      });
+    }
+
+    function sessionUrl(suffix) {
+      return (
+        cfg.navigationSessionUrlTemplate.replace(
+          NAV_SESSION_PLACEHOLDER,
+          journey.sessionId
+        ) + suffix
+      );
+    }
+
+    // Equirectangular approximation — fine for throttle gates at city
+    // scale; the server does the authoritative proximity check anyway.
+    function distanceM(a, b) {
+      const rad = Math.PI / 180;
+      const x =
+        (b.lng - a.lng) * rad * Math.cos(((a.lat + b.lat) / 2) * rad);
+      const y = (b.lat - a.lat) * rad;
+      return Math.sqrt(x * x + y * y) * 6371000;
+    }
+
+    function arrowEl(heading) {
+      const el = document.createElement("div");
+      el.textContent = "▲";
+      el.style.transform = "rotate(" + (heading || 0) + "deg)";
+      el.style.color = "#fff";
+      el.style.fontSize = "10px";
+      el.style.lineHeight = "1";
+      return el;
+    }
+
+    function setJourneyMarker(pos, heading) {
+      const p = { lat: pos.lat, lng: pos.lng };
+      if (!journey.marker) {
+        if (window.vz.hasMapId && markerLib.AdvancedMarkerElement) {
+          journey.pin = new markerLib.PinElement({
+            background: "#0f766e",
+            borderColor: "#115e59",
+            glyphColor: "#fff",
+            glyph: arrowEl(heading),
+            scale: 1.15,
+          });
+          journey.marker = new markerLib.AdvancedMarkerElement({
+            map: map,
+            position: p,
+            title: "Your position — journey active",
+            content: journey.pin.element,
+            zIndex: 300,
+          });
+        } else {
+          journey.marker = new markerLib.Marker({
+            map: map,
+            position: p,
+            title: "Your position — journey active",
+            zIndex: 300,
+            icon: {
+              path: google.maps.SymbolPath.CIRCLE,
+              scale: 9,
+              fillColor: "#0f766e",
+              fillOpacity: 1,
+              strokeColor: "#fff",
+              strokeWeight: 2.5,
+            },
+          });
+        }
+        return;
+      }
+      if (journey.pin) {
+        journey.marker.position = p;
+        journey.pin.glyph = arrowEl(heading);
+      } else {
+        journey.marker.setPosition(p);
+      }
+    }
+
+    function removeJourneyMarker() {
+      if (!journey.marker) return;
+      if (journey.pin) journey.marker.map = null;
+      else journey.marker.setMap(null);
+      journey.marker = null;
+      journey.pin = null;
+    }
+
+    function alertKey(a) {
+      return a.id + ":" + ((a.status && a.status.state) || "");
+    }
+
+    function onRouteIds() {
+      const route =
+        window.vz.routeDataFor && window.vz.routeDataFor(null);
+      const ids = new Set();
+      if (route) {
+        (route.crossings || []).forEach((c) => {
+          if (c.match === "on_route") ids.add(c.id);
+        });
+      }
+      return ids;
+    }
+
+    function showAlert(alerts) {
+      const simulated = alerts.every(
+        (a) => a.status && a.status.state === "closed_simulated"
+      );
+      const inferred = !simulated && alerts.every(
+        (a) => a.status && a.status.state === "closed_inferred"
+      );
+      if (alertTitle) {
+        alertTitle.textContent = simulated
+          ? "Simulated closed gate ahead"
+          : inferred
+            ? alerts.length > 1
+              ? "Likely closed gates ahead"
+              : "Likely closed gate ahead"
+            : alerts.length > 1
+              ? "Closed gates ahead"
+              : "Closed gate ahead";
+      }
+      if (alertList) {
+        const onRoute = onRouteIds();
+        alertList.innerHTML = "";
+        alerts.slice(0, 4).forEach((a) => {
+          const li = document.createElement("li");
+          li.textContent =
+            (a.name || "Unnamed level crossing") +
+            " — about " +
+            Math.round(a.distance_m) +
+            " m" +
+            (a.status && a.status.state === "closed_inferred"
+              ? " — likely closed (same line)"
+              : "") +
+            (onRoute.has(a.id) ? " — on your route" : "");
+          alertList.appendChild(li);
+        });
+        if (alerts.length > 4) {
+          const li = document.createElement("li");
+          li.textContent = "and " + (alerts.length - 4) + " more";
+          alertList.appendChild(li);
+        }
+      }
+      if (alertNote) {
+        alertNote.textContent = simulated
+          ? "Simulated closure — demo data, not a real-world report."
+          : inferred
+            ? "Inferred from a closure on the same line — not a direct report for this crossing. Wait or pick another route."
+            : "Community report — not official railway information. Wait or pick another route.";
+      }
+      alertEl.hidden = false;
+    }
+
+    function hideAlert() {
+      alertEl.hidden = true;
+      journey.lastAlerts = [];
+    }
+
+    function applyNearby(body) {
+      const alerts = body.alerts || [];
+      const present = new Set(alerts.map(alertKey));
+      // Re-arm: a dismissed alert may pop again once it has left the
+      // alert radius or its status changed — but never spam the same
+      // alert while the user is still inside it.
+      journey.dismissed.forEach((key) => {
+        if (!present.has(key)) journey.dismissed.delete(key);
+      });
+      journey.lastAlerts = alerts;
+      const fresh = alerts.filter(
+        (a) => !journey.dismissed.has(alertKey(a))
+      );
+      if (fresh.length) showAlert(fresh);
+      else if (!alerts.length) hideAlert();
+    }
+
+    function journeyProblem(message) {
+      if (alertTitle) alertTitle.textContent = "Journey can't run";
+      if (alertList) {
+        alertList.innerHTML = "";
+        const li = document.createElement("li");
+        li.textContent = message;
+        alertList.appendChild(li);
+      }
+      if (alertNote) alertNote.textContent = "";
+      alertEl.hidden = false;
+    }
+
+    function blockingOnRoute(route) {
+      return (route && route.crossings ? route.crossings : []).filter(
+        (c) => NAV_ALERT_STATES.indexOf(c.state) >= 0
+      );
+    }
+
+    function hideConfirm() {
+      confirmEl.hidden = true;
+      journey.confirmAction = null;
+    }
+
+    // A reported/simulated-closed crossing on the chosen route gets an
+    // honest warning before either action — never a silent handoff.
+    function confirmThen(routeId, action) {
+      const route =
+        window.vz.routeDataFor && window.vz.routeDataFor(routeId);
+      const blocking = blockingOnRoute(route);
+      if (!blocking.length) {
+        action();
+        return;
+      }
+      const simulated = blocking.every(
+        (c) => c.state === "closed_simulated"
+      );
+      const inferred = !simulated && blocking.every(
+        (c) => c.state === "closed_inferred"
+      );
+      if (confirmTitle) {
+        confirmTitle.textContent = simulated
+          ? "A crossing on this route is simulated closed"
+          : inferred
+            ? "A crossing on this route is likely closed (same line)"
+            : "A crossing on this route is reported closed";
+      }
+      if (confirmList) {
+        confirmList.innerHTML = "";
+        blocking.forEach((c) => {
+          const li = document.createElement("li");
+          li.textContent =
+            (c.name || "Unnamed level crossing") +
+            (c.state === "closed_inferred"
+              ? " — likely closed (same line)"
+              : "") +
+            (c.match === "on_route" ? " — on the route" : " — near the route");
+          confirmList.appendChild(li);
+        });
+      }
+      journey.confirmAction = action;
+      confirmEl.hidden = false;
+    }
+
+    if (confirmGo) {
+      confirmGo.addEventListener("click", () => {
+        const action = journey.confirmAction;
+        hideConfirm();
+        if (action) action();
+      });
+    }
+    if (confirmCancel) {
+      confirmCancel.addEventListener("click", hideConfirm);
+    }
+
+    function fieldValue(id) {
+      const el = document.getElementById(id);
+      return el ? el.value.trim() : "";
+    }
+
+    // Universal Maps URL (maps/dir/?api=1): place ids disambiguate the
+    // text; raw coordinates are sent only when the user already opted
+    // into "My location" or a map click. Omitting the origin lets
+    // Google use the device's own position.
+    function openInGoogleMaps() {
+      // Typed-but-unselected text must reach the handoff too.
+      syncRouteFields();
+      const params = new URLSearchParams({
+        api: "1",
+        travelmode: "driving",
+      });
+      const oPid = fieldValue("id_origin_place_id");
+      const oText = fieldValue("id_origin");
+      const oLat = fieldValue("id_origin_lat");
+      const oLng = fieldValue("id_origin_lng");
+      if (oPid) {
+        params.set("origin", oText);
+        params.set("origin_place_id", oPid);
+      } else if (oLat && oLng) {
+        params.set("origin", oLat + "," + oLng);
+      } else if (oText && oText.toLowerCase() !== "my location") {
+        params.set("origin", oText);
+      }
+      const dPid = fieldValue("id_destination_place_id");
+      const dText = fieldValue("id_destination");
+      const dLat = fieldValue("id_destination_lat");
+      const dLng = fieldValue("id_destination_lng");
+      if (dPid) {
+        params.set("destination", dText);
+        params.set("destination_place_id", dPid);
+      } else if (dLat && dLng) {
+        params.set("destination", dLat + "," + dLng);
+      } else {
+        params.set("destination", dText);
+      }
+      window.open(
+        "https://www.google.com/maps/dir/?" + params.toString(),
+        "_blank",
+        "noopener"
+      );
+    }
+
+    function checkPosition(pos) {
+      const c = journey.config;
+      const now = Date.now();
+      if (now - journey.lastCheckAt < c.min_update_seconds * 1000) return;
+      if (
+        journey.lastCheckPos &&
+        distanceM(journey.lastCheckPos, pos) < c.min_update_distance_m
+      ) {
+        return;
+      }
+      if (journey.checkCtl) journey.checkCtl.abort();
+      const ctl = new AbortController();
+      journey.checkCtl = ctl;
+      journey.lastCheckAt = now;
+      journey.lastCheckPos = pos;
+      postJson(
+        sessionUrl("position/"),
+        { lat: pos.lat, lng: pos.lng },
+        ctl.signal
+      )
+        .then((response) =>
+          response
+            .json()
+            .then((body) => ({
+              ok: response.ok,
+              status: response.status,
+              body: body,
+            }))
+        )
+        .then((result) => {
+          if (ctl.signal.aborted) return;
+          if (!result.ok) {
+            if (result.status === 410 || result.status === 404) {
+              stopJourney();
+              journeyProblem(
+                "This journey session expired — start a new one."
+              );
+            } else if (result.status === 429 && result.body) {
+              journey.lastCheckAt =
+                now + (result.body.retry_after_seconds || 5) * 1000;
+            }
+            return;
+          }
+          applyNearby(result.body);
+        })
+        .catch(() => {
+          /* transient network loss — the next fix retries */
+        });
+    }
+
+    function onPosition(position) {
+      const pos = {
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+      };
+      const heading =
+        typeof position.coords.heading === "number" &&
+        !Number.isNaN(position.coords.heading)
+          ? position.coords.heading
+          : null;
+      setJourneyMarker(pos, heading);
+      if (window.vz.reducedMotion) map.setCenter(pos);
+      else map.panTo(pos);
+      checkPosition(pos);
+    }
+
+    function onPositionError(error) {
+      if (error && error.code === 1) {
+        // PERMISSION_DENIED — stop cleanly rather than watch a dead feed.
+        stopJourney();
+        journeyProblem(
+          "Location permission was denied — journey mode needs it to check for closed gates."
+        );
+      }
+    }
+
+    function startJourney() {
+      if (journey.sessionId) return;
+      if (!("geolocation" in navigator)) {
+        journeyProblem("This browser doesn't support location.");
+        return;
+      }
+      if (!window.isSecureContext) {
+        journeyProblem(
+          "Journey mode needs a secure (HTTPS) connection — localhost works for development."
+        );
+        return;
+      }
+      postJson(cfg.navigationStartUrl, {})
+        .then((response) => {
+          if (!response.ok) throw new Error("start " + response.status);
+          return response.json();
+        })
+        .then((body) => {
+          if (!body.session || !body.session.id) {
+            throw new Error("bad session");
+          }
+          journey.sessionId = body.session.id;
+          if (body.config) journey.config = body.config;
+          bannerEl.hidden = false;
+          journey.watchId = navigator.geolocation.watchPosition(
+            onPosition,
+            onPositionError,
+            { enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 }
+          );
+        })
+        .catch(() => {
+          journeyProblem("Couldn't start a journey session — try again.");
+        });
+    }
+
+    function stopJourney() {
+      if (journey.watchId !== null) {
+        navigator.geolocation.clearWatch(journey.watchId);
+        journey.watchId = null;
+      }
+      if (journey.checkCtl) {
+        journey.checkCtl.abort();
+        journey.checkCtl = null;
+      }
+      if (journey.sessionId) {
+        // Best-effort end; the session also expires server-side.
+        postJson(sessionUrl("end/"), {}).catch(() => {});
+        journey.sessionId = null;
+      }
+      journey.lastCheckAt = 0;
+      journey.lastCheckPos = null;
+      journey.dismissed.clear();
+      removeJourneyMarker();
+      bannerEl.hidden = true;
+      hideAlert();
+      hideConfirm();
+    }
+
+    if (endBtn) endBtn.addEventListener("click", stopJourney);
+    if (alertDismiss) {
+      alertDismiss.addEventListener("click", () => {
+        journey.lastAlerts.forEach((a) =>
+          journey.dismissed.add(alertKey(a))
+        );
+        hideAlert();
+      });
+    }
+
+    // Journey buttons live inside #route-result, which is swapped on
+    // reroute — delegate so the listener survives the swap.
+    document.addEventListener("click", (event) => {
+      const target =
+        event.target && event.target.closest ? event.target : null;
+      const startBtn = target && target.closest("[data-journey-start]");
+      if (startBtn) {
+        confirmThen(startBtn.dataset.journeyStart, startJourney);
+        return;
+      }
+      const navBtn = target && target.closest("[data-journey-nav]");
+      if (navBtn) {
+        confirmThen(navBtn.dataset.journeyNav, openInGoogleMaps);
+      }
+    });
   }
 
   async function init() {
@@ -1686,6 +2490,11 @@
         setupSimulation(map, markerLib);
       } catch (err) {
         console.warn("Simulation layer failed to initialise:", err);
+      }
+      try {
+        setupJourney(map, markerLib);
+      } catch (err) {
+        console.warn("Journey mode failed to initialise:", err);
       }
     } catch (err) {
       showApiError();

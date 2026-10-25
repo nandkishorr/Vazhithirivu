@@ -5,6 +5,7 @@ from .models import (
     SimulatedVehicle,
     SimulationEvent,
     SimulationGateEvent,
+    SimulationPrompt,
     SimulationRun,
 )
 
@@ -46,7 +47,7 @@ class SimulationRunAdmin(admin.ModelAdmin):
 
 @admin.register(SimulatedVehicle)
 class SimulatedVehicleAdmin(GISModelAdmin):
-    list_display = ("id", "run", "index", "label", "speed_mps", "direction")
+    list_display = ("id", "run", "index", "label", "crossing", "waiting")
     list_filter = ("run",)
 
     def get_readonly_fields(self, request, obj=None):
@@ -60,6 +61,26 @@ class SimulatedVehicleAdmin(GISModelAdmin):
 class SimulationGateEventAdmin(admin.ModelAdmin):
     list_display = ("id", "run", "crossing", "gate_state", "tick")
     list_filter = ("run", "gate_state")
+
+    def get_readonly_fields(self, request, obj=None):
+        return [f.name for f in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(SimulationPrompt)
+class SimulationPromptAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "run",
+        "crossing",
+        "state",
+        "detected_tick",
+        "created_at",
+        "resolved_at",
+    )
+    list_filter = ("run", "state")
 
     def get_readonly_fields(self, request, obj=None):
         return [f.name for f in self.model._meta.fields]

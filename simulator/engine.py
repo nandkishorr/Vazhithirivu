@@ -1,14 +1,20 @@
-"""Simulation engine: vehicle spawning, ticking and run lifecycle.
+"""Simulation engine: static-user spawning, ticking and run lifecycle.
 
-Determinism: a run's vehicles and gate schedule come entirely from its
+Determinism: a run's users and gate schedule come entirely from its
 ``seed`` — replaying the same seed against the same imported OSM data
 produces the same scenario.
 
-Vehicle paths are *synthetic* LineStrings through real mapped crossings:
-the road direction is approximated as perpendicular to the nearest
-mapped track at the crossing node (roads cross tracks at right angles
-at level crossings). They are demo geometry, not real road or routing
-provider data, and are labelled as such everywhere they surface.
+Simulated users are *static* (ADR-021): each one is parked in a queue
+slot on an approach to a crossing and never moves. While a gate is
+physically closed the parked users count as *waiting*; their dwell is
+what presence inference turns into a confirmation prompt.
+
+Parking positions sit on *synthetic* LineStrings through real mapped
+crossings: the road direction is approximated as perpendicular to the
+nearest mapped track at the crossing node (roads cross tracks at right
+angles at level crossings). They are demo geometry, not real road or
+routing provider data, and are labelled as such everywhere they
+surface.
 
 Coordinates use an equirectangular approximation — accurate enough for
 demo paths of a few kilometres around Kochi; the stored PostGIS
@@ -36,6 +42,7 @@ from .models import (
     SimulatedVehicle,
     SimulationEvent,
     SimulationGateEvent,
+    SimulationPrompt,
     SimulationRun,
 )
 from .status import active_run, gate_states_for_run
@@ -156,9 +163,9 @@ def _nearest_track_bearing(track_geoms, point, max_dist_m=500.0):
 def _build_path(rng, crossing_xy, road_bearing, length_m):
     """5-vertex path through the crossing along ``road_bearing``.
 
-    The middle vertex is exactly the crossing point (vehicles traverse
-    it); other vertices get small perpendicular jitter so paths look
-    road-like rather than perfectly straight.
+    The middle vertex is exactly the crossing point (the parked user is
+    positioned relative to it); other vertices get small perpendicular
+    jitter so paths look road-like rather than perfectly straight.
     """
     coords = []
     for frac in (-0.5, -0.25, 0.0, 0.25, 0.5):
@@ -185,7 +192,16 @@ def _reference_geometries():
 
 
 def spawn_vehicles(run, rng):
-    """Create ``config["vehicles"]`` vehicles for ``run`` deterministically."""
+    """Create ``config["vehicles"]`` static simulated users for ``run``.
+
+    Users never move (ADR-021): each one parks in a queue slot just
+    short of a gate, alternating approach sides so the demo shows a
+    queue on both approaches. Assignment is round-robin across the
+    run's gated crossings, or a seeded random crossing when no gate is
+    scheduled. While the gate is physically closed the parked users
+    count as *waiting* — their dwell is what presence inference
+    detects.
+    """
     crossings, track_geoms = _reference_geometries()
     if not crossings:
         raise SimulatorError(
@@ -193,11 +209,25 @@ def spawn_vehicles(run, rng):
             "(see RUNBOOK 'OSM import')."
         )
     base_length = settings.SIM_PATH_LENGTH_M
-    min_speed = settings.SIM_VEHICLE_MIN_SPEED_MPS
-    max_speed = settings.SIM_VEHICLE_MAX_SPEED_MPS
+    gap = settings.SIM_QUEUE_GAP_M
+    spacing = settings.SIM_QUEUE_SPACING_M
+
+    by_id = {c.pk: c for c in crossings}
+    gate_ids = [
+        spec["crossing_id"]
+        for spec in run.config.get("gates") or []
+        if spec.get("crossing_id") in by_id
+    ]
+    side_toggle = {}
+    queue_rank = {}
+
     vehicles = []
     for i in range(run.vehicle_count):
-        crossing = rng.choice(crossings)
+        crossing = (
+            by_id[gate_ids[i % len(gate_ids)]]
+            if gate_ids
+            else rng.choice(crossings)
+        )
         cx, cy = crossing.location.x, crossing.location.y
         track_bearing = _nearest_track_bearing(track_geoms, (cx, cy))
         # Roads cross tracks at right angles; without a track we still
@@ -211,19 +241,33 @@ def spawn_vehicles(run, rng):
         coords = _build_path(rng, (cx, cy), road_bearing, length)
         cum = _cum_lengths(coords)
         total = cum[-1]
-        progress = rng.uniform(0, total)
+        crossing_progress = cum[2]  # the middle vertex is the crossing
+        side = side_toggle.get(crossing.pk, 1)
+        side_toggle[crossing.pk] = -side
+        rank = queue_rank.get((crossing.pk, side), 0)
+        queue_rank[(crossing.pk, side)] = rank + 1
+        offset = gap + rank * spacing + rng.uniform(0.0, 6.0)
+        progress = (
+            crossing_progress - offset
+            if side == 1
+            else crossing_progress + offset
+        )
+        progress = min(max(progress, 2.0), total - 2.0)
         position, _ = _position_and_heading(coords, cum, progress)
         vehicles.append(
             SimulatedVehicle(
                 run=run,
                 index=i,
-                label=f"Sim vehicle {i + 1:02d}",
+                label=f"Sim user {i + 1:02d}",
                 path=LineString(coords, srid=4326),
                 path_length_m=total,
                 progress_m=progress,
-                direction=rng.choice([-1, 1]),
-                speed_mps=rng.uniform(min_speed, max_speed),
+                direction=side,
+                speed_mps=0.0,
                 position=Point(position, srid=4326),
+                crossing=crossing,
+                crossing_progress_m=crossing_progress,
+                waiting=False,
             )
         )
     SimulatedVehicle.objects.bulk_create(vehicles)
@@ -331,12 +375,16 @@ def start_run(
     seed=None,
     tick_seconds=None,
     gates=None,
+    auto_confirm=False,
     force=False,
     now=None,
 ):
     """Create and activate a simulation run.
 
     Only one run may be active; ``force`` stops the current one first.
+    ``auto_confirm`` resolves every raised prompt instantly (demo
+    without a click); the default requires a human to confirm in the
+    web app.
     """
     now = now or timezone.now()
     interrupt_stale_runs(now)
@@ -355,6 +403,7 @@ def start_run(
     if not 1 <= vehicles <= settings.SIM_MAX_VEHICLES:
         raise SimulatorError(
             f"vehicles must be between 1 and {settings.SIM_MAX_VEHICLES}"
+            " (each one is a static simulated user)"
         )
     duration_seconds = (
         settings.SIM_DEFAULT_DURATION_SECONDS
@@ -387,6 +436,7 @@ def start_run(
             "tick_seconds": tick_seconds,
             "seed": seed,
             "gates": resolved_gates,
+            "auto_confirm": bool(auto_confirm),
         },
         status=SimulationRun.STATUS_RUNNING,
         active_slot=1,
@@ -421,7 +471,7 @@ def start_run(
 
 
 def vehicle_frames(run):
-    """Current vehicle positions for sim payloads (id/label/lat/lng/dir)."""
+    """Static user positions for sim payloads (id/label/lat/lng/dir)."""
     frames = []
     for v in run.vehicles.all():
         coords = list(v.path.coords)
@@ -437,9 +487,195 @@ def vehicle_frames(run):
                 "lat": round(v.position.y, 6),
                 "lng": round(v.position.x, 6),
                 "dir": round(heading, 1),
+                "wait": bool(v.waiting),
+                "crossing": v.crossing_id,
             }
         )
     return frames
+
+
+# --- Gate truth + presence inference (ADR-018) --------------------------------
+#
+# ``config["gates"]`` is the *physical* gate schedule for the demo world:
+# it marks the users parked at the crossing as waiting. It never reaches
+# the status overlay directly — a ``SimulationGateEvent`` row (what the
+# overlay reads) is only written when a human confirms a raised prompt
+# (or ``auto_confirm`` does it), or when a physically reopened gate is
+# surfaced automatically after a confirmed closure.
+
+
+def gate_truth(run, tick):
+    """Physical gate state → ``{crossing_id: "closed"}`` (absent = open)."""
+    truth = {}
+    for spec in run.config.get("gates") or []:
+        close_tick = spec.get("close_tick") or 0
+        open_tick = spec.get("open_tick")
+        if (
+            close_tick
+            and tick >= close_tick
+            and (open_tick is None or tick < open_tick)
+        ):
+            truth[spec["crossing_id"]] = "closed"
+    return truth
+
+
+def pending_prompts(run):
+    """The run's unresolved SimulationPrompts (for sim payloads)."""
+    return list(
+        run.prompts.filter(state=SimulationPrompt.STATE_PENDING)
+        .select_related("crossing")
+        .order_by("created_at", "pk")
+    )
+
+
+def _dwell_ticks_needed(run):
+    dwell = settings.SIM_DWELL_SECONDS
+    if dwell <= 0:
+        return 1
+    return max(1, math.ceil(dwell / max(1, run.tick_seconds)))
+
+
+def _detect_prompts(run, vehicles, truth, tick, now):
+    """Raise pending SimulationPrompts where simulated users are stuck.
+
+    A prompt fires once per run+crossing+closure: ``SIM_DWELL_MIN_USERS``
+    waiting users within ``SIM_DWELL_RADIUS_M`` for at least
+    ``SIM_DWELL_SECONDS`` worth of ticks.
+    """
+    created = []
+    gated = [
+        spec
+        for spec in run.config.get("gates") or []
+        if truth.get(spec.get("crossing_id")) == "closed"
+    ]
+    if not gated:
+        return created
+    radius = settings.SIM_DWELL_RADIUS_M
+    need_ticks = _dwell_ticks_needed(run)
+    min_users = max(1, settings.SIM_DWELL_MIN_USERS)
+    crossings = RailwayCrossing.objects.in_bulk(
+        spec["crossing_id"] for spec in gated
+    )
+    for spec in gated:
+        cid = spec["crossing_id"]
+        crossing = crossings.get(cid)
+        if crossing is None:
+            continue
+        waiting = [
+            v
+            for v in vehicles
+            if v.crossing_id == cid
+            and v.waiting
+            and v.wait_ticks >= need_ticks
+            and _dist_m(
+                (v.position.x, v.position.y),
+                (crossing.location.x, crossing.location.y),
+            )
+            <= radius
+        ]
+        if len(waiting) < min_users:
+            continue
+        if run.prompts.filter(
+            crossing_id=cid, truth_close_tick=spec["close_tick"]
+        ).exists():
+            continue
+        prompt = SimulationPrompt.objects.create(
+            run=run,
+            crossing=crossing,
+            truth_close_tick=spec["close_tick"],
+            detected_tick=tick,
+            waiting_vehicle_indexes=[v.index for v in waiting],
+            state=SimulationPrompt.STATE_PENDING,
+            created_at=now,
+        )
+        _log(
+            run,
+            tick,
+            "prompt_raised",
+            {
+                "crossing_id": cid,
+                "prompt_id": prompt.pk,
+                "waiting_users": [v.index for v in waiting],
+            },
+            now=now,
+        )
+        created.append(prompt)
+    return created
+
+
+def confirm_prompt(prompt, note="confirmed", now=None):
+    """Resolve a pending prompt → ``closed`` SimulationGateEvent.
+
+    This is the human-in-the-loop step: only a confirmed prompt surfaces
+    the simulated closure into the shared status overlay.
+    """
+    now = now or timezone.now()
+    run = prompt.run
+    if prompt.state != SimulationPrompt.STATE_PENDING:
+        raise SimulatorError(
+            f"Prompt #{prompt.pk} is already {prompt.state}."
+        )
+    if not run.is_active:
+        raise SimulatorError("The simulation run is no longer active.")
+    event = SimulationGateEvent.objects.create(
+        run=run,
+        crossing=prompt.crossing,
+        gate_state=SimulationGateEvent.STATE_CLOSED,
+        tick=run.ticks,
+        occurred_at=now,
+    )
+    prompt.state = SimulationPrompt.STATE_CONFIRMED
+    prompt.resolved_at = now
+    prompt.resolved_note = note
+    prompt.save(update_fields=["state", "resolved_at", "resolved_note"])
+    _log(
+        run,
+        run.ticks,
+        "prompt_confirmed",
+        {"crossing_id": prompt.crossing_id, "prompt_id": prompt.pk},
+        now=now,
+    )
+    transaction.on_commit(
+        lambda: (
+            updates.publish_prompt_resolved(prompt),
+            publish_crossing_status(prompt.crossing_id),
+        )
+    )
+    return event
+
+
+def _resolve_prompt(prompt, state, note, now):
+    prompt.state = state
+    prompt.resolved_at = now
+    prompt.resolved_note = note
+    prompt.save(update_fields=["state", "resolved_at", "resolved_note"])
+    transaction.on_commit(lambda: updates.publish_prompt_resolved(prompt))
+
+
+def dismiss_prompt(prompt, note="dismissed", now=None):
+    """Resolve a pending prompt without surfacing any gate state."""
+    now = now or timezone.now()
+    if prompt.state != SimulationPrompt.STATE_PENDING:
+        raise SimulatorError(
+            f"Prompt #{prompt.pk} is already {prompt.state}."
+        )
+    if not prompt.run.is_active:
+        raise SimulatorError("The simulation run is no longer active.")
+    _resolve_prompt(prompt, SimulationPrompt.STATE_DISMISSED, note, now)
+    _log(
+        prompt.run,
+        prompt.run.ticks,
+        "prompt_dismissed",
+        {"crossing_id": prompt.crossing_id, "prompt_id": prompt.pk},
+        now=now,
+    )
+    return prompt
+
+
+def _expire_pending_prompts(run, now, note):
+    """Mark every pending prompt of ``run`` expired."""
+    for prompt in run.prompts.filter(state=SimulationPrompt.STATE_PENDING):
+        _resolve_prompt(prompt, SimulationPrompt.STATE_EXPIRED, note, now)
 
 
 def _affected_crossings(run):
@@ -456,64 +692,100 @@ def _republish_gates(run):
         publish_crossing_status(crossing_id)
 
 
+def _update_dwell(vehicles, truth):
+    """Refresh dwell counters for the (static) simulated users.
+
+    Users never move (ADR-021): a parked user counts as *waiting* —
+    the darkened "stopped at the gate" pin — only while its crossing's
+    physical gate is closed, and ``wait_ticks`` accumulates for presence
+    inference. An open gate clears both so a later closure cycle
+    re-detects dwell from zero.
+    """
+    for v in vehicles:
+        if v.crossing_id is not None and truth.get(v.crossing_id) == "closed":
+            v.waiting = True
+            v.wait_ticks += 1
+        else:
+            v.waiting = False
+            v.wait_ticks = 0
+
+
 @transaction.atomic
 def tick_run(run, now=None):
-    """Advance ``run`` by one tick: vehicles, due gate events, publish.
+    """Advance ``run`` by one tick: dwell, inference, publish.
 
-    Returns a summary dict. No-op (returns ``None``) when the run is not
-    ``running``.
+    Gate specs describe the physical world (they mark the parked
+    simulated users as waiting);
+    surfaced status only changes through confirmed prompts and the
+    automatic reopen. Returns a summary dict; no-op (``None``) when the
+    run is not ``running``.
     """
     now = now or timezone.now()
     if run.status != SimulationRun.STATUS_RUNNING:
         return None
     tick = run.ticks + 1
     tick_seconds = run.tick_seconds
+    run.ticks = tick  # set early so prompt/event rows record this tick
 
+    truth = gate_truth(run, tick)
     vehicles = list(run.vehicles.all())
-    for v in vehicles:
-        v.progress_m += v.direction * v.speed_mps * tick_seconds
-        if v.progress_m > v.path_length_m:
-            v.progress_m = 2 * v.path_length_m - v.progress_m
-            v.direction = -1
-        elif v.progress_m < 0:
-            v.progress_m = -v.progress_m
-            v.direction = 1
-        coords = list(v.path.coords)
-        position, _ = _position_and_heading(
-            coords, _cum_lengths(coords), v.progress_m
-        )
-        v.position = Point(position, srid=4326)
-    SimulatedVehicle.objects.bulk_update(
-        vehicles, ["progress_m", "direction", "position"]
-    )
+    _update_dwell(vehicles, truth)
+    SimulatedVehicle.objects.bulk_update(vehicles, ["waiting", "wait_ticks"])
 
+    # Presence inference → confirmation prompts. Auto-confirm resolves
+    # them immediately through the same code path a human click takes.
+    new_prompts = _detect_prompts(run, vehicles, truth, tick, now)
+    if run.config.get("auto_confirm"):
+        for prompt in new_prompts:
+            confirm_prompt(prompt, note="auto-confirmed", now=now)
+
+    # Physical gate transitions: log them, expire unanswered prompts on
+    # reopen, and surface an "open" event after a confirmed closure —
+    # the queue visibly disperses, no second confirmation needed.
     gate_changes = []
     for spec in run.config.get("gates") or []:
-        state = None
-        if tick == spec.get("close_tick"):
-            state = SimulationGateEvent.STATE_CLOSED
-        elif tick == spec.get("open_tick"):
-            state = SimulationGateEvent.STATE_OPEN
-        if state is None:
+        cid = spec["crossing_id"]
+        close_tick = spec.get("close_tick") or 0
+        open_tick = spec.get("open_tick")
+        if tick == close_tick:
+            _log(run, tick, "gate_closed", {"crossing_id": cid}, now=now)
+        if open_tick is None or tick != open_tick:
             continue
-        crossing_id = spec["crossing_id"]
-        SimulationGateEvent.objects.create(
-            run=run,
-            crossing_id=crossing_id,
-            gate_state=state,
-            tick=tick,
-            occurred_at=now,
+        _log(run, tick, "gate_open", {"crossing_id": cid}, now=now)
+        for prompt in run.prompts.filter(
+            crossing_id=cid,
+            truth_close_tick=close_tick,
+            state=SimulationPrompt.STATE_PENDING,
+        ):
+            _resolve_prompt(
+                prompt,
+                SimulationPrompt.STATE_EXPIRED,
+                "gate reopened before confirmation",
+                now,
+            )
+        latest = (
+            run.gate_events.filter(crossing_id=cid).order_by("-pk").first()
         )
-        _log(
-            run,
-            tick,
-            f"gate_{state}",
-            {"crossing_id": crossing_id},
-            now=now,
-        )
-        gate_changes.append(crossing_id)
+        if latest is not None and latest.gate_state == "closed":
+            SimulationGateEvent.objects.create(
+                run=run,
+                crossing_id=cid,
+                gate_state=SimulationGateEvent.STATE_OPEN,
+                tick=tick,
+                occurred_at=now,
+            )
+            gate_changes.append(cid)
 
-    run.ticks = tick
+    # Unanswered prompts expire so a missed one can't nag forever.
+    ttl = settings.SIM_PROMPT_TTL_SECONDS
+    for prompt in run.prompts.filter(
+        state=SimulationPrompt.STATE_PENDING,
+        created_at__lte=now - timedelta(seconds=ttl),
+    ):
+        _resolve_prompt(
+            prompt, SimulationPrompt.STATE_EXPIRED, "prompt timed out", now
+        )
+
     run.heartbeat_at = now
     update_fields = ["ticks", "heartbeat_at"]
     finished = bool(
@@ -525,13 +797,18 @@ def tick_run(run, now=None):
         run.finished_at = now
         update_fields += ["status", "active_slot", "finished_at"]
         _log(run, tick, "run_finished", now=now)
+        _expire_pending_prompts(run, now, "run finished")
     run.save(update_fields=update_fields)
 
     gate_states = gate_states_for_run(run)
     frames = vehicle_frames(run)
+    prompts = pending_prompts(run)
 
     def _publish():
-        updates.publish_tick(run, frames, gate_states, now=now)
+        updates.publish_tick(run, frames, gate_states, prompts, now=now)
+        for prompt in new_prompts:
+            if prompt.state == SimulationPrompt.STATE_PENDING:
+                updates.publish_prompt(prompt)
         for cid in gate_changes:
             publish_crossing_status(cid)
         if finished:
@@ -543,6 +820,7 @@ def tick_run(run, now=None):
         "tick": tick,
         "vehicles": len(frames),
         "gate_changes": gate_changes,
+        "prompts": [p.pk for p in new_prompts],
         "finished": finished,
     }
 
@@ -558,6 +836,7 @@ def _end_active(run, status, kind, note="", now=None):
         update_fields=["status", "active_slot", "finished_at", "error"]
     )
     _log(run, run.ticks, kind, {"note": note} if note else {}, now=now)
+    _expire_pending_prompts(run, now, "run ended")
     updates.publish_run_event(run, kind.split("_", 1)[-1])
     # The overlay ends with the active status — republish every gated
     # crossing so clients see the state revert.
